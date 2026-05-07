@@ -102,23 +102,28 @@ setup-linux.sh installerer Node.js, claude CLI, og deployer:
 
 Foundry bruker OAuth-token via `CLAUDE_CODE_OAUTH_TOKEN` env-var (ikke `~/.claude/.credentials.json`). Begrunnelse: credentials.json holder kun timer/dager før refresh-token utloper hvis ikke aktivt brukt; OAuth-token har ~1 ars levetid og er eksplisitt designet for automation.
 
-```bash
+```powershell
 # 1. Pa spartan: generer OAuth-token (vises kun en gang - lagre umiddelbart i 1Password)
 claude setup-token
 
-# 2. Pa dev-PC: skriv secrets.env til foundry via heredoc (verdier passerer kun via SSH-tunnel)
-ssh foundry 'cat > ~/.config/foundry/secrets.env << "EOF"
-TELEGRAM_BOT_TOKEN=<bot-token fra 1Password>
-TELEGRAM_CHAT_ID=<chat-id fra 1Password>
-CLAUDE_CODE_OAUTH_TOKEN=<oauth-token fra 1Password>
-CLAUDE_TOKEN_CREATED=YYYY-MM-DD
-EOF
-chmod 600 ~/.config/foundry/secrets.env'
+# 2. Pa dev-PC (PowerShell): paste secrets-blokken i Notepad, lagre, scp + CRLF-strip + chmod
+notepad $env:TEMP\foundry-secrets.env
+# Lim inn (paste virker i Notepad), lagre, lukk:
+#   TELEGRAM_BOT_TOKEN=<bot-token fra 1Password>
+#   TELEGRAM_CHAT_ID=<chat-id fra 1Password>
+#   CLAUDE_CODE_OAUTH_TOKEN=<oauth-token fra 1Password>
+#   CLAUDE_TOKEN_CREATED=YYYY-MM-DD
+
+scp $env:TEMP\foundry-secrets.env foundry:/home/claude/.config/foundry/secrets.env
+ssh foundry "sed -i 's/\r$//' ~/.config/foundry/secrets.env && chmod 600 ~/.config/foundry/secrets.env && ls -la ~/.config/foundry/secrets.env"
+Remove-Item $env:TEMP\foundry-secrets.env
 
 # 3. Verifiser headless-auth (source secrets, deretter claude -p)
 ssh foundry "set -a; source ~/.config/foundry/secrets.env; set +a; claude -p 'reply with the word OK'"
 # forvent: OK
 ```
+
+**`sed -i 's/\r$//'`-steget er obligatorisk:** Notepad lagrer med Windows-line-endings (CRLF). Cron-jobber pa Linux ma se LF. Hver verdi-linje i secrets.env har et avsluttende `\r` etter SCP fra Windows som vil ende opp inni hver env-var-verdi - bash-souring klager pa `$'\r': command not found`, og Telegram-curl-tokens med trailing CR aksepteres ikke av Telegram-API. Den ene `sed`-kjoringen pa CT-en eliminerer hele klassen av problemer.
 
 `CLAUDE_TOKEN_CREATED` er datoen tokenen ble generert (YYYY-MM-DD). Brukes av `_shared/token-expiry-check.sh` for daglig dato-basert utlops-varsling 30 dager for 1-ars-mark.
 
@@ -175,20 +180,24 @@ CLAUDE_CODE_OAUTH_TOKEN har ~1 ars levetid. Daglig `_shared/token-expiry-check.s
 
 ### Rotation-prosedyre (~3 min)
 
-```bash
+Samme deploy-monster som Trinn 5 i bringup-runbooken (Notepad + SCP + sed-strip + chmod). Fyll alle 4 verdiene i secrets.env, ikke bare de to nye - filen overskrives komplett.
+
+```powershell
 # 1. Pa spartan: generer ny OAuth-token (vises kun en gang!)
 claude setup-token
 # Kopier output-tokenen umiddelbart til 1Password "Infrastructure"-vault entry "claude-foundry-oauth-token"
 
-# 2. Pa dev-PC: oppdater 2 linjer i secrets.env pa foundry
-#    (CLAUDE_CODE_OAUTH_TOKEN + CLAUDE_TOKEN_CREATED)
-ssh foundry 'cat > ~/.config/foundry/secrets.env << "EOF"
-TELEGRAM_BOT_TOKEN=<eksisterende verdi fra 1Password>
-TELEGRAM_CHAT_ID=<eksisterende verdi fra 1Password>
-CLAUDE_CODE_OAUTH_TOKEN=<ny token fra 1Password>
-CLAUDE_TOKEN_CREATED=YYYY-MM-DD
-EOF
-chmod 600 ~/.config/foundry/secrets.env'
+# 2. Pa dev-PC: skriv ny secrets.env
+notepad $env:TEMP\foundry-secrets.env
+# Lim inn (alle 4 verdier):
+#   TELEGRAM_BOT_TOKEN=<eksisterende verdi fra 1Password>
+#   TELEGRAM_CHAT_ID=<eksisterende verdi fra 1Password>
+#   CLAUDE_CODE_OAUTH_TOKEN=<ny token fra 1Password>
+#   CLAUDE_TOKEN_CREATED=YYYY-MM-DD
+
+scp $env:TEMP\foundry-secrets.env foundry:/home/claude/.config/foundry/secrets.env
+ssh foundry "sed -i 's/\r$//' ~/.config/foundry/secrets.env && chmod 600 ~/.config/foundry/secrets.env"
+Remove-Item $env:TEMP\foundry-secrets.env
 
 # 3. Verifiser
 ssh foundry "set -a; source ~/.config/foundry/secrets.env; set +a; claude -p 'reply OK'"
