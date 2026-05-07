@@ -1,0 +1,15 @@
+# foundry log rotation policy
+# Installeres av bootstrap/setup-linux.sh til /etc/logrotate.d/foundry (root-eid).
+# Per [[SPEC-foundry]] retention policy: weekly rotation, 12 ukers historikk,
+# compress for diskbesparelse, missingok+notifempty for at logrotate ikke
+# bryter pa ferske CT-er der enkelte logger ikke har blitt skrevet enna.
+
+/home/claude/foundry/logs/*.log {
+    weekly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 claude claude
+}

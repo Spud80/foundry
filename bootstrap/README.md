@@ -1,0 +1,194 @@
+# Foundry bootstrap-runbook
+
+15-min manuell SSH-runbook for å reise foundry-CT fra null til kjørende runtime, samt disaster-recovery-prosedyrer.
+
+> **Autoritativ doc:** SPEC og PLAN ligger i Obsidian-vaulten under `7.Projects/Dev/sync-infra/foundry/`. Denne fila er repo-lokal operasjons-doc.
+
+## Forutsetninger
+
+| Krav | Hvor sjekkes |
+|------|--------------|
+| Proxmox-host `thehub` tilgjengelig via SSH | `ssh thehub "uptime"` |
+| Debian 12-template lastet ned på thehub | `ls /var/lib/vz/template/cache/debian-12-standard*.tar.zst` på thehub |
+| Tailscale tailnet (`tail8feda0.ts.net`) medlemskap fra dev-PC | `tailscale status` |
+| GitHub-konto med tilgang til `Spud80/foundry` | `gh repo view Spud80/foundry` |
+| 1Password-vault med Telegram-bot-token og Claude credentials | manuell |
+
+## 15-min bringup-runbook (ny CT)
+
+Tidsestimat: 12-15 min ved kjørbare nett-forhold. Forutsetter at CT-spec ([`proxmox-ct-config.md`](proxmox-ct-config.md)) ikke har endret seg siden forrige bringup.
+
+### Trinn 1: Provision LXC på thehub (~3 min)
+
+```bash
+ssh thehub
+sudo pct create 102 \
+  /var/lib/vz/template/cache/debian-12-standard_12.12-1_amd64.tar.zst \
+  --hostname foundry \
+  --ostype debian \
+  --unprivileged 1 \
+  --features nesting=1 \
+  --onboot 1 \
+  --cores 2 \
+  --memory 2048 \
+  --swap 512 \
+  --rootfs local-lvm:20 \
+  --net0 name=eth0,bridge=vmbr0,ip=10.0.0.52/24,gw=10.0.0.1,type=veth \
+  --nameserver "1.1.1.1 8.8.8.8"
+```
+
+Append TUN-device-eksponering til `/etc/pve/lxc/102.conf`:
+
+```
+lxc.cgroup2.devices.allow: c 10:200 rwm
+lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file 0 0
+```
+
+Start CT-en: `sudo pct start 102`.
+
+### Trinn 2: CT-internt grunnoppsett (~5 min)
+
+Kjør fra thehub via `pct exec`:
+
+```bash
+sudo pct exec 102 -- bash -c '
+set -e
+apt-get update
+apt-get install -y curl sudo ca-certificates git jq
+useradd -m -s /bin/bash claude
+echo "claude ALL=(root) NOPASSWD: ALL" > /etc/sudoers.d/claude
+chmod 440 /etc/sudoers.d/claude
+visudo -c -f /etc/sudoers.d/claude
+passwd -l claude
+timedatectl set-timezone Europe/Oslo
+systemctl mask systemd-timesyncd
+'
+```
+
+Per [Proxmox guest time policy](../docs/) (`~/.claude/rules/dev-infra.md`): timesyncd masket på unprivileged LXC fordi CAP_SYS_TIME er blokkert uansett; host-klokka arves direkte.
+
+### Trinn 3: Tailscale på CT (~2 min)
+
+```bash
+sudo pct exec 102 -- bash -c '
+curl -fsSL https://tailscale.com/install.sh | sh
+tailscale up --ssh
+'
+```
+
+Browser-flow trigges på dev-PC for device-auth - godkjenn `foundry`-noden i Tailscale-admin-konsollen. Etter godkjenning: `tailscale set --ssh` allerede aktivert via `up --ssh`.
+
+Verifiser fra dev-PC: `ssh foundry "uname -a"` (Tailscale SSH-modell, auth=none over tailnet).
+
+### Trinn 4: Klon repo og kjør setup-linux.sh (~3 min)
+
+Fra dev-PC, alt heretter via `ssh foundry`:
+
+```bash
+ssh foundry "git clone https://github.com/Spud80/foundry.git ~/foundry && \
+  cd ~/foundry && ./bootstrap/setup-linux.sh"
+```
+
+> **Repo og runtime deler rot:** Repoet klones til `~/foundry/`. Runtime-state (`~/foundry/logs/`, `~/foundry/queue/`, `~/foundry/.deploy.lock`, `jobs/*/.venv/`) lever inne i repoet men er gitignored, slik at `git reset --hard origin/main` (auto-update */15) ikke blåser dem bort. Se `.gitignore` på repo-rot (kommer i Phase 500) for full liste.
+
+setup-linux.sh installerer Node.js, claude CLI, og deployer:
+- `~/.config/foundry/notify-core.sh` + `watchdog-notify.sh`
+- `/etc/cron.d/foundry-watchdog` (root-eid)
+- `/etc/logrotate.d/foundry` (root-eid)
+
+### Trinn 5: Secrets-deploy (Phase 300, ~2 min)
+
+> Kun applicable etter Phase 300 er ferdig. Dokumenteres her for fullstendig DR-runbook.
+
+```bash
+# Fra dev-PC eller spartan med fersk credentials.json:
+scp ~/.claude/.credentials.json foundry:~/.claude/.credentials.json
+ssh foundry "chmod 600 ~/.claude/.credentials.json"
+
+# Fra 1Password:
+ssh foundry "cat > ~/.config/foundry/secrets.env" << 'EOF'
+TELEGRAM_BOT_TOKEN=<from 1Password>
+TELEGRAM_CHAT_ID=<from 1Password>
+EOF
+ssh foundry "chmod 600 ~/.config/foundry/secrets.env"
+
+# Verifiser headless-auth:
+ssh foundry "claude -p 'reply with the word OK'"
+```
+
+### Trinn 6: Deploy-pipeline (Phase 500)
+
+> Phase 500-leveranser. `auto-update.sh */15` puller endringer fra `main` og kjører `deploy.sh` for å regenerere system-crontab fra `cron.d/`-fragmenter. Dokumenteres her når Phase 500 er implementert.
+
+## Disaster Recovery
+
+### CT-rollback (Proxmox snapshot)
+
+Ukentlig × 4 rolling Proxmox-snapshots per [SPEC-foundry] retention-policy. Liste tilgjengelige snapshots:
+
+```bash
+ssh thehub "sudo pct listsnapshot 102"
+```
+
+Rollback til siste good snapshot:
+
+```bash
+ssh thehub "sudo pct rollback 102 <snapshot-name>"
+```
+
+CT-en stoppes, rolles tilbake, og kan startes igjen med `sudo pct start 102`. **Effekt:** alle endringer etter snapshot-tidspunkt er borte (inkludert auto-update'ede commits, queued Telegram-meldinger, ferske logs). Akseptabelt fordi:
+- Foundry har ingen unik tilstand (synket vault er master, jobber kan re-kjøres)
+- Memory-extract kjører daglig 18:30 - tap av <24t batch-output er gjenopprettelig
+- Secrets (`credentials.json`, `secrets.env`) bevares (de ligger i hjemmemappa, snapshottet sammen)
+
+### Host-død (thehub utilgjengelig)
+
+Foundry-CT lever på thehub. Hvis thehub dør, må CT-en gjenopprettes fra ekstern backup eller bygges fra grunnen.
+
+**Variant A: thehub kommer tilbake (transient feil).**
+1. Vent på host-recovery
+2. CT auto-starter via `--onboot 1`
+3. auto-update-cron puller siste main innen 15 min
+4. Watchdog-cron varsler hvis ikke
+
+**Variant B: permanent host-tap, gjenoppbygg fra null.**
+1. Provision ny Proxmox-host (utenfor scope for denne runbook)
+2. Kjør Trinn 1-4 over på den nye hosten (~12-15 min)
+3. Kjør Trinn 5 (secrets-deploy fra 1Password og spartan) (~2 min)
+4. Total RTO: ~20 min fra ny host er klar
+
+**Datatap-vurdering:** Foundry holder ingen unik tilstand. Vault leveres via Syncthing fra filehub (hub-modell, separat DR). Memory-extract output skrives tilbake til synket vault, ikke i foundry-CT. Altså: full CT-tap = 0 datatap, kun midlertidig avbrudd i daglig 18:30-cron.
+
+### Vault-restore
+
+Foundry er en downstream consumer av vault via Syncthing (Phase 400). Vault-DR håndteres av filehub som hub og dev-PC-er som peers. Foundry-spesifikk DR-handling: ingen. Når Syncthing er konfigurert (Phase 400), re-syncer foundry vault automatisk når den kommer online.
+
+## Token-rotation
+
+Claude credentials utløper ~1 år etter `claude setup-token`-kjøring. Rotation-prosedyre dokumenteres i Phase 300 (token-expiry-check-cron sender Telegram-varsel når < 30 dager gjenstår).
+
+> **Stub:** Detaljert rotation-runbook kommer i Phase 300.
+
+## Acceptance-test for setup-linux.sh
+
+Etter trinn 4, bekreft Phase 200 acceptance:
+
+```bash
+# 1. Idempotens: andre kjoring uten endringer skal vaere no-op
+ssh foundry "cd ~/foundry && git status"  # forvent: clean
+ssh foundry "cd ~/foundry && ./bootstrap/setup-linux.sh"  # forvent: 'already installed' for node + claude
+
+# 2. Filer pa plass
+ssh foundry "ls -la ~/.config/foundry/"
+# forvent: notify-core.sh + watchdog-notify.sh, mode 0755, eier claude
+
+ssh foundry "sudo ls -la /etc/cron.d/foundry-watchdog /etc/logrotate.d/foundry"
+# forvent: begge eier root, mode 0644
+
+# 3. watchdog-notify fungerer uten ~/foundry/-tre
+ssh foundry "mv ~/foundry ~/foundry.bak; \
+             ~/.config/foundry/watchdog-notify.sh 'foundry: smoke test fra DR-runbook'; \
+             mv ~/foundry.bak ~/foundry"
+# forvent (etter Phase 300 secrets): Telegram-melding mottatt
+# forvent (uten secrets): script kjorer, melding havner i queue uten leveranse
+```

@@ -1,0 +1,17 @@
+# foundry kjorer pa Linux - alle tekstfiler skal lagres med LF.
+# Forhindrer at Windows-tooling med autocrlf=false eller editor-quirks
+# committer CRLF-versjoner som ville feile pa target-CT (bash: '\r': command not found).
+
+* text=auto eol=lf
+
+# Eksplisitte regler for shell og cron - ekstra forsvar
+*.sh    text eol=lf
+*.cron  text eol=lf
+*.py    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+
+# Logrotate-config (uten extension-konvensjon)
+logrotate.* text eol=lf

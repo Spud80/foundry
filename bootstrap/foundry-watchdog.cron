@@ -1,0 +1,17 @@
+# foundry-watchdog: alarm via Telegram hvis auto-update.log mangler fersk
+# OK-linje siste 45 min. Vinduet er kalibrert mot auto-update-cron */15
+# + watchdog-intervall 60 min for a eliminere false-positives.
+#
+# Eier: root (mode 0644). Installeres av bootstrap/setup-linux.sh til
+# /etc/cron.d/foundry-watchdog. IKKE regenerert av deploy.sh - lever utenfor
+# cron.d/-pipeline-en for at watchdog skal vaere robust mot deploy-feil.
+#
+# Sjekken og notify-funksjonen er begge i ~/.config/foundry/watchdog-notify.sh
+# (se watchdog-notify.sh-headeren for begrunnelse). Cron kaller bare
+# entrypoint-en uten args.
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+
+0 * * * * claude /home/claude/.config/foundry/watchdog-notify.sh
