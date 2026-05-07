@@ -1,0 +1,7 @@
+# token-expiry-check: dato-basert OAuth-token-utlops-varsling.
+# Aktiveres av Phase 500 deploy.sh (regenererer claude-bruker sin crontab fra cron.d/*.cron).
+# Format: standard user-crontab (5-field, ingen user-felt - deploy.sh konkatenerer til claude sin crontab).
+# Tidspunkt: 09:00 norsk lokal-tid - tidlig nok til at bruker kan handle samme dag,
+# men ikke i nattlig peak-window for batch-jobber.
+
+0 9 * * * /home/claude/foundry/_shared/token-expiry-check.sh

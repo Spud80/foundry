@@ -100,21 +100,27 @@ setup-linux.sh installerer Node.js, claude CLI, og deployer:
 
 > Kun applicable etter Phase 300 er ferdig. Dokumenteres her for fullstendig DR-runbook.
 
+Foundry bruker OAuth-token via `CLAUDE_CODE_OAUTH_TOKEN` env-var (ikke `~/.claude/.credentials.json`). Begrunnelse: credentials.json holder kun timer/dager før refresh-token utloper hvis ikke aktivt brukt; OAuth-token har ~1 ars levetid og er eksplisitt designet for automation.
+
 ```bash
-# Fra dev-PC eller spartan med fersk credentials.json:
-scp ~/.claude/.credentials.json foundry:~/.claude/.credentials.json
-ssh foundry "chmod 600 ~/.claude/.credentials.json"
+# 1. Pa spartan: generer OAuth-token (vises kun en gang - lagre umiddelbart i 1Password)
+claude setup-token
 
-# Fra 1Password:
-ssh foundry "cat > ~/.config/foundry/secrets.env" << 'EOF'
-TELEGRAM_BOT_TOKEN=<from 1Password>
-TELEGRAM_CHAT_ID=<from 1Password>
+# 2. Pa dev-PC: skriv secrets.env til foundry via heredoc (verdier passerer kun via SSH-tunnel)
+ssh foundry 'cat > ~/.config/foundry/secrets.env << "EOF"
+TELEGRAM_BOT_TOKEN=<bot-token fra 1Password>
+TELEGRAM_CHAT_ID=<chat-id fra 1Password>
+CLAUDE_CODE_OAUTH_TOKEN=<oauth-token fra 1Password>
+CLAUDE_TOKEN_CREATED=YYYY-MM-DD
 EOF
-ssh foundry "chmod 600 ~/.config/foundry/secrets.env"
+chmod 600 ~/.config/foundry/secrets.env'
 
-# Verifiser headless-auth:
-ssh foundry "claude -p 'reply with the word OK'"
+# 3. Verifiser headless-auth (source secrets, deretter claude -p)
+ssh foundry "set -a; source ~/.config/foundry/secrets.env; set +a; claude -p 'reply with the word OK'"
+# forvent: OK
 ```
+
+`CLAUDE_TOKEN_CREATED` er datoen tokenen ble generert (YYYY-MM-DD). Brukes av `_shared/token-expiry-check.sh` for daglig dato-basert utlops-varsling 30 dager for 1-ars-mark.
 
 ### Trinn 6: Deploy-pipeline (Phase 500)
 
@@ -139,7 +145,7 @@ ssh thehub "sudo pct rollback 102 <snapshot-name>"
 CT-en stoppes, rolles tilbake, og kan startes igjen med `sudo pct start 102`. **Effekt:** alle endringer etter snapshot-tidspunkt er borte (inkludert auto-update'ede commits, queued Telegram-meldinger, ferske logs). Akseptabelt fordi:
 - Foundry har ingen unik tilstand (synket vault er master, jobber kan re-kjøres)
 - Memory-extract kjører daglig 18:30 - tap av <24t batch-output er gjenopprettelig
-- Secrets (`credentials.json`, `secrets.env`) bevares (de ligger i hjemmemappa, snapshottet sammen)
+- Secrets (`secrets.env` med OAuth-token og Telegram-token) bevares (lever i hjemmemappa, snapshottet sammen)
 
 ### Host-død (thehub utilgjengelig)
 
@@ -165,9 +171,44 @@ Foundry er en downstream consumer av vault via Syncthing (Phase 400). Vault-DR h
 
 ## Token-rotation
 
-Claude credentials utløper ~1 år etter `claude setup-token`-kjøring. Rotation-prosedyre dokumenteres i Phase 300 (token-expiry-check-cron sender Telegram-varsel når < 30 dager gjenstår).
+CLAUDE_CODE_OAUTH_TOKEN har ~1 ars levetid. Daglig `_shared/token-expiry-check.sh` (cron 09:00 norsk tid, aktivert av Phase 500 deploy.sh) sender Telegram-varsel nar 30 dager gjenstar til utlop.
 
-> **Stub:** Detaljert rotation-runbook kommer i Phase 300.
+### Rotation-prosedyre (~3 min)
+
+```bash
+# 1. Pa spartan: generer ny OAuth-token (vises kun en gang!)
+claude setup-token
+# Kopier output-tokenen umiddelbart til 1Password "Infrastructure"-vault entry "claude-foundry-oauth-token"
+
+# 2. Pa dev-PC: oppdater 2 linjer i secrets.env pa foundry
+#    (CLAUDE_CODE_OAUTH_TOKEN + CLAUDE_TOKEN_CREATED)
+ssh foundry 'cat > ~/.config/foundry/secrets.env << "EOF"
+TELEGRAM_BOT_TOKEN=<eksisterende verdi fra 1Password>
+TELEGRAM_CHAT_ID=<eksisterende verdi fra 1Password>
+CLAUDE_CODE_OAUTH_TOKEN=<ny token fra 1Password>
+CLAUDE_TOKEN_CREATED=YYYY-MM-DD
+EOF
+chmod 600 ~/.config/foundry/secrets.env'
+
+# 3. Verifiser
+ssh foundry "set -a; source ~/.config/foundry/secrets.env; set +a; claude -p 'reply OK'"
+# forvent: OK
+```
+
+### Hvorfor OAuth-token og ikke credentials.json
+
+`~/.claude/.credentials.json` brukes av interaktiv `claude`-login og inneholder en kort-levetid access-token + refresh-token. Refresh-tokenet utloper hvis ikke aktivt brukt i noen dager. For en CT som kjorer batch-cron daglig (eller sjeldnere), er det ikke palitelig.
+
+`claude setup-token` produserer en separat long-lived OAuth-token (~1 ar) som ikke trenger refresh. Eksplisitt designet for automation. Levert via `CLAUDE_CODE_OAUTH_TOKEN` env-var.
+
+### Hvis token utloper for rotation
+
+`token-expiry-check.sh` sender alarm i tre stadier:
+- 30 dager igjen: "Forbered rotation"
+- 0 dager: "Utloper i dag"
+- < 0 dager: "UTLOPT for X dager siden - foundry-jobber feiler na pa auth"
+
+Hvis siste tilfelle skjer: `auto-update.sh` vil fortsette a virke (krever ikke claude-auth), men jobber som kaller `claude -p` (memory-extract Phase 600) feiler til ny token er deployet. Watchdog-cron varsler ogsa fordi `auto-update.log` fortsetter a vise OK uavhengig av jobb-feil - sjekk Telegram for jobb-spesifikke alarm i tillegg.
 
 ## Acceptance-test for setup-linux.sh
 

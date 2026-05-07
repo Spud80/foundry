@@ -21,3 +21,6 @@ jobs/*/.state.json
 # Python cache
 **/__pycache__/
 *.pyc
+
+# Claude Code local settings (per-machine)
+.claude/
