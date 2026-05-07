@@ -1,0 +1,23 @@
+# Runtime state - sikrer at git reset --hard origin/main ikke murderer state mellom auto-update-runs.
+# Credentials og secrets (~/.config/foundry/secrets.env, ~/.claude/.credentials.json) lever
+# per design utenfor ~/foundry/-treet - ingen .gitignore-oppføring nødvendig, men flytt aldri
+# disse filene inn i repo-mappa.
+
+# Per-jobb venvs
+*/.venv/
+**/.venv/
+
+# Runtime queues og logger
+queue/
+logs/
+
+# Job state-filer
+jobs/*/.state.json
+**/.state.json
+
+# Deploy-lock
+.deploy.lock
+
+# Python cache
+**/__pycache__/
+*.pyc
