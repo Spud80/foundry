@@ -1,0 +1,154 @@
+name: smoke-test
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
+      - name: Lint all bash scripts
+        run: |
+          set -e
+          # shellcheck SC1090/SC1091 (source-not-found) er forventet for runtime-source'ing
+          # av notify-core.sh og secrets.env. SC2034 (unused vars) tillates for fingerprint-vars.
+          find . -type f \( -name '*.sh' \) \
+            -not -path './.git/*' \
+            -not -path './*/.venv/*' \
+            -print0 \
+            | xargs -0 shellcheck --severity=warning --exclude=SC1090,SC1091,SC2034
+
+  cron-syntax:
+    name: cron syntax validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate cron.d/*.cron
+        run: |
+          set -e
+          # Pragmatisk regex matching deploy.sh sin egen validering.
+          cron_re='^[[:space:]]*([0-9*,/-]+)[[:space:]]+([0-9*,/-]+)[[:space:]]+([0-9*,/-]+)[[:space:]]+([0-9*,/-]+)[[:space:]]+([0-9*,/-]+)[[:space:]]+(.+)$'
+          fail=0
+          for f in cron.d/*.cron; do
+            echo "validating $f"
+            while IFS= read -r line || [ -n "$line" ]; do
+              [ -z "${line// }" ] && continue
+              case "$line" in \#*) continue ;; esac
+              if ! [[ "$line" =~ $cron_re ]]; then
+                echo "  FAIL: invalid cron-line: $line"
+                fail=$((fail + 1))
+              fi
+            done < "$f"
+          done
+          if [ "$fail" -gt 0 ]; then
+            echo "::error::$fail invalid cron-line(s) - see output above"
+            exit 1
+          fi
+
+  deploy-dry-run:
+    name: deploy.sh dry-run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cron + python3-venv
+        run: sudo apt-get update -qq && sudo apt-get install -y cron python3-venv
+      - name: Set HOME so deploy.sh's REPO_ROOT resolves
+        run: |
+          # deploy.sh kjorer som non-root uten ekstra setup
+          chmod +x deploy.sh
+      - name: Run deploy.sh DRY_RUN=1
+        run: DRY_RUN=1 ./deploy.sh
+
+  notify-parity:
+    name: notify.sh / watchdog-notify.sh format parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stub curl + run both entrypoints + diff outputs
+        run: |
+          set -e
+          # Setup mock-queue dir og stub curl som logger args istedenfor a sende.
+          MOCK_DIR="$(mktemp -d)"
+          export FOUNDRY_QUEUE_DIR="${MOCK_DIR}/queue"
+          export FOUNDRY_SECRETS_FILE="${MOCK_DIR}/secrets.env"
+          mkdir -p "$FOUNDRY_QUEUE_DIR"
+
+          cat > "$FOUNDRY_SECRETS_FILE" <<'EOF'
+          TELEGRAM_BOT_TOKEN=TEST_BOT_TOKEN_FOR_PARITY
+          TELEGRAM_CHAT_ID=TEST_CHAT_ID_FOR_PARITY
+          EOF
+
+          # Stub curl: logg args + body til fil, returner '200' som write-out.
+          STUB_BIN="${MOCK_DIR}/bin"
+          CURL_LOG="${MOCK_DIR}/curl-calls.log"
+          mkdir -p "$STUB_BIN"
+          # Unquoted heredoc - $CURL_LOG ekspanderes nu, $* og $arg escapes med backslash
+          # for a forbli som de er i stub-scriptet.
+          cat > "${STUB_BIN}/curl" <<STUBEOF
+          #!/usr/bin/env bash
+          # Stub curl - logger args + skriver "200" til stdout for --write-out '%{http_code}'
+          printf 'CALL: %s\n' "\$*" >> "${CURL_LOG}"
+          for arg in "\$@"; do
+            if [ "\$arg" = "%{http_code}" ]; then
+              printf '200'
+              exit 0
+            fi
+          done
+          exit 0
+          STUBEOF
+          chmod +x "${STUB_BIN}/curl"
+          export PATH="${STUB_BIN}:${PATH}"
+
+          # Test-melding
+          MSG="parity-test-$(date +%s)"
+
+          # Entrypoint 1: _shared/notify.sh
+          chmod +x _shared/notify.sh _shared/notify-core.sh _shared/drain-queue.sh \
+                   bootstrap/watchdog-notify.sh
+
+          # Hver entrypoint skriver til samme queue-dir; isoler ved a klare mellom kall
+          rm -f "$FOUNDRY_QUEUE_DIR"/*.msg "${MOCK_DIR}/curl-calls.log" || true
+
+          ./_shared/notify.sh "$MSG" || echo "notify.sh exit $?"
+
+          # Lagre tilstand etter notify.sh
+          notify_curl="$(cat "${MOCK_DIR}/curl-calls.log" 2>/dev/null || echo '')"
+
+          # Reset for watchdog-notify.sh
+          rm -f "$FOUNDRY_QUEUE_DIR"/*.msg "${MOCK_DIR}/curl-calls.log" || true
+
+          # watchdog-notify.sh source'er ${SCRIPT_DIR}/notify-core.sh - vi maa simulere
+          # at scripts er i samme dir (slik setup-linux.sh deployer dem).
+          DEPLOY_DIR="${MOCK_DIR}/config-foundry"
+          mkdir -p "$DEPLOY_DIR"
+          cp _shared/notify-core.sh "$DEPLOY_DIR/"
+          cp bootstrap/watchdog-notify.sh "$DEPLOY_DIR/"
+          chmod +x "$DEPLOY_DIR"/*.sh
+
+          # Direct-send-mode: kalt med arg
+          "${DEPLOY_DIR}/watchdog-notify.sh" "$MSG" || echo "watchdog-notify.sh exit $?"
+
+          watchdog_curl="$(cat "${MOCK_DIR}/curl-calls.log" 2>/dev/null || echo '')"
+
+          echo "=== notify.sh curl-call ==="
+          echo "$notify_curl"
+          echo "=== watchdog-notify.sh curl-call ==="
+          echo "$watchdog_curl"
+
+          # Begge skal ha kalt curl med samme Telegram-API-URL og samme body-args
+          # (timestamp i queue-filnavn varierer, men curl-call-strengen skal vaere
+          # identisk siden den bruker queue-fil-INNHOLDET, ikke filnavn).
+          if [ "$notify_curl" != "$watchdog_curl" ]; then
+            echo "::error::Format-paritet brutt mellom notify.sh og watchdog-notify.sh"
+            diff <(echo "$notify_curl") <(echo "$watchdog_curl") || true
+            exit 1
+          fi
+
+          echo "Format-paritet OK: begge entrypoints produserer identiske curl-kall"
