@@ -1,0 +1,13 @@
+# memory-extract: Phase E daglig vault-memory-extract.
+# Tidspunkt: 18:30 norsk lokal-tid (etter normal arbeidsdag, for nattlig
+# Kopia-backup pa filehub). Kjorer ~/foundry/jobs/memory-extract/run.sh.
+#
+# Phase 500 status: cron-fila installeres aktiv, men run.sh starter med
+# payload-guard som no-op'er hvis extract.py ikke er importert enno
+# (Phase 600 - aktiveres nar obsidian-memory-prosjektet leverer mot
+# CONTRACT.md). Fram til da sender guard'en ETT varsel pr. dag om at
+# payload mangler - akseptabel signal-til-stoy ratio mens Phase 600 er deferred.
+#
+# Format: 5-felt user-crontab (deploy.sh konkatenerer til claude sin crontab).
+
+30 18 * * * cd /home/claude/foundry/jobs/memory-extract && ./run.sh

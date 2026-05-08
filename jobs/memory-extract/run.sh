@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# run.sh - memory-extract daglig orkestrering.
+#
+# Kjores av cron 30 18 * * * (regenerert til crontab av deploy.sh fra
+# cron.d/memory-extract.cron).
+#
+# Sekvens (per CONTRACT.md):
+#   1. Payload-guard - exit 0 stille hvis extract.py mangler (Phase 600 ikke aktiv)
+#   2. Source secrets.env for CLAUDE_CODE_OAUTH_TOKEN
+#   3. flock --nonblock pa ~/foundry/.deploy.lock (serialiserer mot auto-update.sh)
+#   4. ssh filehub-cleanup <vault-path> (pre-flight; exit 1 = konflikter)
+#   5. Glob-assert pa raw/-katalog (exit 0 hvis ingen nye filer)
+#   6. timeout 30m .venv/bin/python extract.py (exit-code propageres til notify)
+#
+# Logg: ~/foundry/logs/memory-extract.log (append, en linje per run + extract.py-output).
+# Notify: Telegram via _shared/notify.sh ved exit != 0.
+
+set -uo pipefail
+
+JOB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+JOB_NAME="memory-extract"
+REPO_ROOT="$(cd "${JOB_DIR}/../.." && pwd)"
+
+LOCK_FILE="${REPO_ROOT}/.deploy.lock"
+SECRETS_FILE="${HOME}/.config/foundry/secrets.env"
+LOG_FILE="${HOME}/foundry/logs/memory-extract.log"
+STATE_FILE="${JOB_DIR}/.state.json"
+VAULT_ROOT="${VAULT_ROOT:-${HOME}/vault}"
+VAULT_ROOT_FILEHUB="${VAULT_ROOT_FILEHUB:-/data/sync/vault}"
+EXTRACT_PY="${JOB_DIR}/extract.py"
+VENV_PYTHON="${JOB_DIR}/.venv/bin/python"
+EXTRACT_TIMEOUT="${EXTRACT_TIMEOUT:-30m}"
+
+mkdir -p "$(dirname "$LOG_FILE")"
+
+ts() { date -Iseconds; }
+log() { printf '[%s] %s\n' "$(ts)" "$*" >> "$LOG_FILE"; }
+
+# Notify-sti: hardkode for forutsigbarhet (run.sh kjor uten cwd-garantier i cron)
+notify() {
+  "${REPO_ROOT}/_shared/notify.sh" "${JOB_NAME}: $*" || true
+}
+
+log "=== run start (pid $$) ==="
+
+# === Steg 1: payload-guard ===
+# Phase 600 ikke aktivert hvis extract.py mangler. Send EN gang pr. dag og exit 0.
+# Cron-fila er aktiv fra Phase 500, men jobben er no-op fram til obsidian-memory
+# leverer mot CONTRACT.md.
+if [ ! -f "$EXTRACT_PY" ]; then
+  notify "payload not deployed (Phase 600 not active) - extract.py missing in ${JOB_DIR}"
+  log "payload-guard: extract.py mangler - exit 0 (no-op)"
+  exit 0
+fi
+
+# === Steg 2: source secrets.env for OAuth-token ===
+if [ ! -f "$SECRETS_FILE" ]; then
+  notify "FATAL: secrets.env not found at ${SECRETS_FILE}"
+  log "FATAL: ${SECRETS_FILE} mangler"
+  exit 2
+fi
+
+set -a
+# shellcheck source=/dev/null
+. "$SECRETS_FILE"
+set +a
+
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  notify "FATAL: CLAUDE_CODE_OAUTH_TOKEN missing from secrets.env"
+  log "FATAL: CLAUDE_CODE_OAUTH_TOKEN ikke satt etter source"
+  exit 2
+fi
+
+# === Steg 3: flock --nonblock pa deploy-lock ===
+exec 9>"$LOCK_FILE"
+if ! flock --nonblock 9; then
+  log "BUSY: ${LOCK_FILE} holdt - skip dette vinduet (cron prover igjen i morgen)"
+  notify "skipped run: deploy-lock busy (auto-update or another job in progress)"
+  exit 0
+fi
+log "lock acquired"
+
+# === Steg 4: pre-flight ssh filehub-cleanup ===
+log "pre-flight: ssh filehub-cleanup ${VAULT_ROOT_FILEHUB}"
+cleanup_out="$(ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 \
+  filehub-cleanup "${VAULT_ROOT_FILEHUB}" 2>&1)"
+cleanup_status=$?
+
+log "filehub-cleanup output: ${cleanup_out}"
+log "filehub-cleanup exit: ${cleanup_status}"
+
+if [ "$cleanup_status" -ne 0 ]; then
+  notify "pre-flight blocked: filehub-cleanup returned exit ${cleanup_status} (Syncthing conflicts unresolved). See logs."
+  exit 1
+fi
+
+# === Steg 5: glob-assert ===
+RAW_ROOT="${VAULT_ROOT}/8.Cortex/Memory/raw"
+if [ ! -d "$RAW_ROOT" ]; then
+  log "no raw/-katalog ved ${RAW_ROOT} - exit 0 (forste run for capture starter, eller Phase 400 Syncthing ikke aktiv)"
+  exit 0
+fi
+
+# Sjekk om det finnes minst en .md-fil (uansett dybde)
+if ! find "$RAW_ROOT" -type f -name '*.md' -print -quit 2>/dev/null | grep -q .; then
+  log "raw/ tom - ingen sesjons-filer a prosessere - exit 0"
+  exit 0
+fi
+
+# === Steg 6: kjor extract.py med timeout ===
+if [ ! -x "$VENV_PYTHON" ]; then
+  notify "FATAL: venv missing at ${VENV_PYTHON} (deploy.sh skulle ha satt opp - sjekk requirements.txt)"
+  log "FATAL: ${VENV_PYTHON} mangler eller ikke kjorbar"
+  exit 2
+fi
+
+export VAULT_ROOT
+export EXTRACT_STATE_FILE="$STATE_FILE"
+export EXTRACT_LOG_FILE="$LOG_FILE"
+
+log "running: timeout ${EXTRACT_TIMEOUT} ${VENV_PYTHON} extract.py"
+timeout "$EXTRACT_TIMEOUT" "$VENV_PYTHON" "$EXTRACT_PY" >> "$LOG_FILE" 2>&1
+extract_status=$?
+
+case "$extract_status" in
+  0)
+    log "=== run complete (exit 0) ==="
+    ;;
+  124)
+    notify "TIMEOUT: extract.py exceeded ${EXTRACT_TIMEOUT} - killed"
+    log "TIMEOUT: extract.py drept etter ${EXTRACT_TIMEOUT}"
+    ;;
+  1)
+    notify "transient error (exit 1) - cron will retry next day. See logs."
+    log "transient error: extract.py exit 1"
+    ;;
+  2)
+    notify "(FATAL) exit 2 - manual intervention required. See logs."
+    log "FATAL: extract.py exit 2"
+    ;;
+  *)
+    notify "(FATAL) unexpected exit ${extract_status}. See logs."
+    log "FATAL: extract.py exit ${extract_status}"
+    ;;
+esac
+
+exit "$extract_status"
