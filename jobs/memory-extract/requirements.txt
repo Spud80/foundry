@@ -1,0 +1,4 @@
+# obsidian-memory extract.py runtime dependencies
+# Standalone Python 3.11+ - no third-party packages required for core extract.
+# requests is used for the optional Syncthing REST API pre-flight check.
+requests>=2.31.0

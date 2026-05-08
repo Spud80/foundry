@@ -6,13 +6,13 @@
 #
 # Sekvens (per CONTRACT.md):
 #   1. Payload-guard - exit 0 stille hvis extract.py mangler (Phase 600 ikke aktiv)
-#   2. Source secrets.env for CLAUDE_CODE_OAUTH_TOKEN
+#   2. Source secrets.env for CLAUDE_CODE_OAUTH_TOKEN, SYNCTHING_API_KEY
 #   3. flock --nonblock pa ~/foundry/.deploy.lock (serialiserer mot auto-update.sh)
 #   4. ssh filehub-cleanup <paths...> (pre-flight; wrapper prepender --require-clean,
 #      exit 1 = konflikter quarantined under noen av <paths>; full /data/sync-skan
 #      kjorer alltid idempotent uavhengig av path-arg)
-#   5. Glob-assert pa raw/-katalog (exit 0 hvis ingen nye filer)
-#   6. timeout 30m .venv/bin/python extract.py (exit-code propageres til notify)
+#   5. timeout 30m .venv/bin/python extract.py (exit-code propageres til notify;
+#      manifest-handshake + Syncthing-preflight skjer inne i extract.py)
 #
 # Logg: ~/foundry/logs/memory-extract.log (append, en linje per run + extract.py-output).
 # Notify: Telegram via _shared/notify.sh ved exit != 0.
@@ -27,7 +27,7 @@ LOCK_FILE="${REPO_ROOT}/.deploy.lock"
 SECRETS_FILE="${HOME}/.config/foundry/secrets.env"
 LOG_FILE="${HOME}/foundry/logs/memory-extract.log"
 STATE_FILE="${JOB_DIR}/.state.json"
-VAULT_ROOT="${VAULT_ROOT:-${HOME}/vault}"
+OBSIDIAN_VAULT_ROOT="${OBSIDIAN_VAULT_ROOT:-${HOME}/vault/My Vault}"
 FILEHUB_CLEAN_SCOPE="${FILEHUB_CLEAN_SCOPE:-/data/sync/obsidian /data/sync/claude-memory}"
 EXTRACT_PY="${JOB_DIR}/extract.py"
 VENV_PYTHON="${JOB_DIR}/.venv/bin/python"
@@ -100,29 +100,18 @@ if [ "$cleanup_status" -ne 0 ]; then
   exit 1
 fi
 
-# === Steg 5: glob-assert ===
-RAW_ROOT="${VAULT_ROOT}/8.Cortex/Memory/raw"
-if [ ! -d "$RAW_ROOT" ]; then
-  log "no raw/-katalog ved ${RAW_ROOT} - exit 0 (forste run for capture starter, eller Phase 400 Syncthing ikke aktiv)"
-  exit 0
-fi
-
-# Sjekk om det finnes minst en .md-fil (uansett dybde)
-if ! find "$RAW_ROOT" -type f -name '*.md' -print -quit 2>/dev/null | grep -q .; then
-  log "raw/ tom - ingen sesjons-filer a prosessere - exit 0"
-  exit 0
-fi
-
-# === Steg 6: kjor extract.py med timeout ===
+# === Steg 5: kjor extract.py med timeout ===
+# Glob-assert + manifest-pre-flight + Syncthing-preflight handteres internt
+# av extract.py (manifest er primaer gate; Syncthing er sekundaer; tom raw/
+# returnerer "0 date-dirs verified" + exit 0 stille).
 if [ ! -x "$VENV_PYTHON" ]; then
   notify "FATAL: venv missing at ${VENV_PYTHON} (deploy.sh skulle ha satt opp - sjekk requirements.txt)"
   log "FATAL: ${VENV_PYTHON} mangler eller ikke kjorbar"
   exit 2
 fi
 
-export VAULT_ROOT
-export EXTRACT_STATE_FILE="$STATE_FILE"
-export EXTRACT_LOG_FILE="$LOG_FILE"
+export OBSIDIAN_VAULT_ROOT
+# CLAUDE_CODE_OAUTH_TOKEN + SYNCTHING_API_KEY er allerede i env via 'set -a' source
 
 log "running: timeout ${EXTRACT_TIMEOUT} ${VENV_PYTHON} extract.py"
 timeout "$EXTRACT_TIMEOUT" "$VENV_PYTHON" "$EXTRACT_PY" >> "$LOG_FILE" 2>&1

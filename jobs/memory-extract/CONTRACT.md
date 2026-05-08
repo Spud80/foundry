@@ -3,94 +3,75 @@
 Leveranse-kontrakt mellom `[[SPEC-foundry]]` (runtime) og `[[SPEC-obsidian-memory]]` (payload).
 Foundry leverer runtime, scheduling og pre-flight; obsidian-memory leverer Phase E payload-koden.
 
-**Status:** Publisert 2026-05-08 som del av foundry Phase 500. obsidian-memory leverer mot
-denne kontrakten i sin Phase E. Endringer her krever koordinering mellom prosjektene.
+**Status:** Phase 600 importert 2026-05-08. extract.py + system-prompt.md + requirements.txt
+levert mot denne kontrakten fra `dev-environment/scripts/memory/` (commit `8e2d89d`).
 
-## Leveranser obsidian-memory må fylle inn
+**Filformat-autoritet:** `dev-environment/docs/reference/memory-knowledge-contract.md`
+([GitHub](https://github.com/Spud80/dev-environment/blob/main/docs/reference/memory-knowledge-contract.md))
+eier raw/-format, manifest-format, og extracted/-format inkludert `schema_version`. Foundry
+CONTRACT.md (denne fila) eier kun runtime-grensesnittet.
+
+## Leveranser obsidian-memory leverer
 
 Følgende filer importeres til `~/foundry/jobs/memory-extract/` på CT:
 
-| Fil | Type | Eier (skriving) | Beskrivelse |
-|-----|------|-----------------|-------------|
-| `extract.py` | Python 3.11+ | obsidian-memory | LLM-klassifisering av raw → typed extracted-entries |
-| `system-prompt.md` | Markdown | obsidian-memory | `--append-system-prompt`-content for `claude -p` |
-| `requirements.txt` | Python deps | obsidian-memory | Pip-deps for extract.py (deploy.sh setter opp `.venv/`) |
+| Fil | Type | Eier | Beskrivelse |
+|-----|------|------|-------------|
+| `extract.py` | Python 3.11+ | obsidian-memory | LLM-klassifisering av raw → typed extracted-entries; standalone, ingen kryss-import |
+| `system-prompt.md` | Markdown | obsidian-memory | `--system-prompt`-content for `claude -p` (override av default Claude Code system prompt) |
+| `requirements.txt` | Python deps | obsidian-memory | `requests>=2.31.0` (kun for optional Syncthing REST-pre-flight); deploy.sh setter opp `.venv/` |
 
-`run.sh` (eier: foundry) source'er secrets.env og kaller `.venv/bin/python extract.py`.
-Payload-guard i `run.sh` exit'er stille hvis `extract.py` mangler (Phase 600 ikke aktivert).
+`run.sh` (eier: foundry) source'er secrets.env, kjører pre-flight, og kaller
+`.venv/bin/python extract.py`. Payload-guard exit'er stille hvis `extract.py` mangler.
 
-## Input-format (foundry → obsidian-memory)
+## Runtime-grensesnitt
 
-extract.py mottar input som:
+### Miljøvariabler (run.sh → extract.py)
 
-* **Glob-pattern:** `${VAULT_ROOT}/8.Cortex/Memory/raw/<YYYY-MM-DD>/<session-id>.md`
-  * `VAULT_ROOT` settes av `run.sh` fra env (default `/home/claude/vault`, justeres når Syncthing-share er etablert i Phase 400)
-  * `<YYYY-MM-DD>` = capture-dato
-  * `<session-id>` = Claude Code session-id (UUID)
-* **Fil-format:** Markdown med vault-konformant frontmatter
-  * `category: cortex`
-  * `topics: ¤topic-1, ¤topic-2` (kan være tom liste)
-  * `description: <kort>`
-  * `parent: ` (typisk peker tilbake til opprinnelses-prosjekt)
-  * Body: bruker-prompts + assistant-tekst + komprimerte tool-call-sammendrag
-* **Idempotency-kontrakt:** Filnavn (session-id) er kildesannhet. Hvis raw-fil
-  for samme session-id allerede har generert extracted-entries, skal extract.py
-  skip stille (ingen re-run uten manuell sletting av extracted-entries).
+run.sh source'er `~/.config/foundry/secrets.env` (set -a) og eksporterer i tillegg
+`OBSIDIAN_VAULT_ROOT`. Følgende leses av extract.py:
 
-## Output-format (obsidian-memory → vault)
+| Variabel | Kilde | Påkrevd? | Bruk |
+|----------|-------|----------|------|
+| `CLAUDE_CODE_OAUTH_TOKEN` | secrets.env | Ja | Authorization for `claude -p`-kall |
+| `OBSIDIAN_VAULT_ROOT` | run.sh (default `${HOME}/vault/My Vault`) | Nei (script har default, men foundry-default = filehub-path - så **må** settes på foundry) | Base-sti for raw/ + extracted/ + state-fil |
+| `SYNCTHING_API_KEY` | secrets.env | Nei | Aktiverer sekundær Syncthing-pre-flight; soft-skip hvis fraværende |
 
-extract.py skriver til:
+extract.py må IKKE kreve andre env-vars uten å oppdatere denne kontrakten først.
 
-* **Sti:** `${VAULT_ROOT}/8.Cortex/Memory/extracted/<type>-YYYY-QN.md`
-  * `<type>` ∈ {`observation`, `decision`, `learning`, `error`, `pattern`, `intent`} (6-type ontologi)
-  * `YYYY-QN` = kvartal-window (f.eks. `2026-Q2`)
-* **Append-modus:** Hver entry appendes som `### <ISO-dato> <kort-tittel>`-heading-blokk
-  med topics-tag-linje (`topics: ¤topic-1, ¤topic-2`) og kilde-referanse til raw-fila.
-* **Frontmatter:** Etablert ved første skriving av en kvartal-fil; aldri overskrevet senere.
+### Exit-code-semantikk
 
-extract.py får IKKE skrive utenfor `${VAULT_ROOT}/8.Cortex/Memory/extracted/`. Eventuelle
-side-effekter (cache, temp-filer) holdes i `jobs/memory-extract/.state.json` (gitignored).
-
-## Exit-code-semantikk
-
-run.sh propagerer extract.py sin exit-kode 1:1:
+run.sh propagerer extract.py sin exit-kode:
 
 | Kode | Betydning | run.sh-håndtering |
 |------|-----------|-------------------|
-| 0 | OK - alle raw-filer prosessert eller ingen nye filer å prosessere | Logg success, exit 0 |
-| 1 | Transient feil (LLM-rate-limit, nettverk, Syncthing-konflikt funnet) | Notify Telegram, exit 1; cron prøver igjen neste dag |
-| 2 | Fatal feil (manglende dependencies, korrupt input, ugyldig vault-state) | Notify Telegram med `(FATAL)`-prefiks, exit 2; krever manuell intervensjon |
+| 0 | OK - alle sesjoner prosessert, ingen pending, ELLER transient pre-flight-fail (manifest sync incomplete, Syncthing needFiles>0) | Logg, exit 0 stille; cron retrier neste dag |
+| 1 | Per-session prosessering-feil (LLM-feil, parse-feil); state preservert, neste cron retrier de feilede | Notify Telegram "transient", exit 1 |
+| 2 | Hard fatal (state-fil korrupt uten --force-flag, manglende system-prompt-file, mismatch state-vs-extracted) | Notify Telegram `(FATAL)`, exit 2; krever manuell intervensjon |
+| 124 | Timeout (`timeout 30m` killed extract.py) | Notify "TIMEOUT", behandles som transient |
 | Andre | Behandles som fatal | Notify, exit som-er |
 
-Forskjellen mellom 1 og 2 er manuell-intervensjons-behov: 1 = retry-kandidat, 2 = krever
-oppmerksomhet før neste cron-kjøring.
+**Designvalg som avviker fra tidligere CONTRACT.md-versjon:** preflight-fail (manifest
+mismatch eller Syncthing incomplete) returnerer **exit 0 silent**, ikke exit 1. Begrunnelse:
+unngår Telegram-spam ved Syncthing-lag (vanlig, transient situasjon). Eksplisitt avvik
+akseptert av foundry-sesjonen 2026-05-08.
 
-## Forventet kjøretid
+### Forventet kjøretid
 
 * **Normal kjøring:** < 5 min for 1-3 nye raw-filer per dag.
 * **Hard timeout i run.sh:** 30 min (`timeout 30m`).
-* Hvis extract.py kjører lenger enn 30 min, drepes den hardt og run.sh exit'er 124
-  (timeout-spesifikk kode); behandles som transient feil av notify-pipeline.
-
-## Miljøvariabler satt av run.sh
-
-run.sh source'er `~/.config/foundry/secrets.env` og videresender følgende til extract.py:
-
-| Variabel | Kilde | Bruk i extract.py |
-|----------|-------|-------------------|
-| `CLAUDE_CODE_OAUTH_TOKEN` | secrets.env | Authorization for `claude -p`-kall |
-| `VAULT_ROOT` | run.sh (default `~/vault`) | Base-sti for input-glob og output-skriving |
-| `EXTRACT_STATE_FILE` | run.sh | Sti til `.state.json` for cache/cursor-tracking |
-| `EXTRACT_LOG_FILE` | run.sh | Sti til `~/foundry/logs/memory-extract.log` (append-mode) |
-
-extract.py må IKKE kreve andre env-vars uten å oppdatere denne kontrakten først.
+* Lengre enn 30 min: drepes hardt, exit 124, behandles som transient.
 
 ## Pre-flight (foundry-eid, før extract.py kalles)
 
 run.sh kjører følgende sjekker FØR extract.py:
 
-1. **`flock --nonblock ~/foundry/.deploy.lock`** - serialiserer mot auto-update.sh
-2. **`ssh filehub-cleanup <PATH+>`** - kjører `sync-conflict-cleanup.py --require-clean <PATH+>`
+1. **Payload-guard:** `[ -f extract.py ] || { notify "payload not deployed"; exit 0; }`.
+   Lar inaktive jobber coexiste med aktiv cron uten daglige feil.
+2. **Source secrets.env** (FATAL hvis mangler eller `CLAUDE_CODE_OAUTH_TOKEN` ikke satt).
+3. **`flock --nonblock ~/foundry/.deploy.lock`** - serialiserer mot auto-update.sh og
+   andre jobber.
+4. **`ssh filehub-cleanup <PATH+>`** - kjører `sync-conflict-cleanup.py --require-clean <PATH+>`
    på filehub-siden via login-shell-wrapper (`/usr/local/bin/foundry-cleanup-login-shell`)
    som auto-prepender `--require-clean`. Semantikk:
    - Cleanup-scriptet skanner **alltid hele `/data/sync`** uavhengig av path-arg (idempotent
@@ -100,28 +81,34 @@ run.sh kjører følgende sjekker FØR extract.py:
      én eller flere quarantines lander under noen av `<PATH+>`; ellers exit 0.
    - Foundry sender `${FILEHUB_CLEAN_SCOPE}` (default
      `/data/sync/obsidian /data/sync/claude-memory`) - paths uten mellomrom, word-splittes
-     av wrapper. Begge scoped fordi memory-extract leser fra vault og avhenger av at
-     claude-memory-capture også er konfliktfri.
+     av wrapper.
    - run.sh exit 1 ved cleanup-exit 1 (transient; cron prøver igjen neste dag).
-3. **Glob-assert** - hvis `8.Cortex/Memory/raw/` mangler eller er tom, exit 0 (no-op)
-4. **`timeout 30m`** rundt `.venv/bin/python extract.py` med std-args
 
-Hvis pre-flight feiler, kalles extract.py ikke i det hele tatt.
+extract.py kjører deretter sin egen interne pre-flight (manifest-handshake + Syncthing
+REST-API). Glob-assert og raw-katalog-sjekk er IKKE i run.sh - extract.py håndterer
+dette internt og returnerer exit 0 stille hvis raw/ er tom.
 
-**Wrapper-kontrakt:** wrapper aksepterer kun path-args (ingen flagg som `--dry-run` eller
-`--root` kan komme gjennom). Endringer i wrapper-grensesnittet eier device-sync-and-backup.
+**Wrapper-kontrakt:** filehub-cleanup-wrapper aksepterer kun path-args (ingen flagg som
+`--dry-run` eller `--root` kan komme gjennom). Endringer i wrapper-grensesnittet eier
+device-sync-and-backup.
 
 ## Endringskontroll
 
-* Endringer i input/output-stier eller exit-codes krever pull-request mot DENNE fila
-  + tilsvarende oppdatering i `[[SPEC-obsidian-memory]]` Phase E.
-* Foundry kan endre runtime-detaljer (lock-mekanikk, timeout-verdi, notify-format)
-  uten kontrakts-endring så lenge exit-codes propageres uendret til notify-pipeline.
-* obsidian-memory eier extract.py-implementering og kan endre intern logikk fritt så
-  lenge input-glob og output-format respekteres.
+* Endringer i runtime-grensesnittet (env-vars, exit-codes, pre-flight-rekkefølge) krever
+  pull-request mot DENNE fila + koordinering med obsidian-memory.
+* Endringer i filformat (raw/, manifest, extracted/, schema_version) eier obsidian-memory
+  via `dev-environment/docs/reference/memory-knowledge-contract.md`. Foundry reagerer kun
+  hvis runtime-grensesnittet endres som følge.
+* Foundry kan endre run.sh internals (lock-mekanikk, timeout-verdi, notify-format,
+  pre-flight-detaljer) uten kontrakts-endring så lenge env-vars og exit-code-mapping
+  bevares.
+* obsidian-memory kan endre extract.py intern logikk fritt så lenge env-var-kontrakten,
+  exit-code-semantikken og runtime-pre-flight-antagelsene respekteres.
 
 ## Referanser
 
 * `[[SPEC-foundry]]` - runtime-arkitektur, deploy-pipeline, watchdog
 * `[[SPEC-obsidian-memory]]` Phase E - extract-payload-leveranse, 6-type ontologi
 * `[[SPEC-device-sync-and-backup]]` - filehub-cleanup-bridge for pre-flight
+* `dev-environment/docs/reference/memory-knowledge-contract.md` - filformat-autoritet
+  (raw/, manifest, extracted/, schema_version)
