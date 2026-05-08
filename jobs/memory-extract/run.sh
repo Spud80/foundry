@@ -8,7 +8,9 @@
 #   1. Payload-guard - exit 0 stille hvis extract.py mangler (Phase 600 ikke aktiv)
 #   2. Source secrets.env for CLAUDE_CODE_OAUTH_TOKEN
 #   3. flock --nonblock pa ~/foundry/.deploy.lock (serialiserer mot auto-update.sh)
-#   4. ssh filehub-cleanup <vault-path> (pre-flight; exit 1 = konflikter)
+#   4. ssh filehub-cleanup <paths...> (pre-flight; wrapper prepender --require-clean,
+#      exit 1 = konflikter quarantined under noen av <paths>; full /data/sync-skan
+#      kjorer alltid idempotent uavhengig av path-arg)
 #   5. Glob-assert pa raw/-katalog (exit 0 hvis ingen nye filer)
 #   6. timeout 30m .venv/bin/python extract.py (exit-code propageres til notify)
 #
@@ -26,7 +28,7 @@ SECRETS_FILE="${HOME}/.config/foundry/secrets.env"
 LOG_FILE="${HOME}/foundry/logs/memory-extract.log"
 STATE_FILE="${JOB_DIR}/.state.json"
 VAULT_ROOT="${VAULT_ROOT:-${HOME}/vault}"
-VAULT_ROOT_FILEHUB="${VAULT_ROOT_FILEHUB:-/data/sync/vault}"
+FILEHUB_CLEAN_SCOPE="${FILEHUB_CLEAN_SCOPE:-/data/sync/obsidian /data/sync/claude-memory}"
 EXTRACT_PY="${JOB_DIR}/extract.py"
 VENV_PYTHON="${JOB_DIR}/.venv/bin/python"
 EXTRACT_TIMEOUT="${EXTRACT_TIMEOUT:-30m}"
@@ -81,9 +83,13 @@ fi
 log "lock acquired"
 
 # === Steg 4: pre-flight ssh filehub-cleanup ===
-log "pre-flight: ssh filehub-cleanup ${VAULT_ROOT_FILEHUB}"
+# Wrapper /usr/local/bin/foundry-cleanup-login-shell prepender --require-clean
+# automatisk; vi sender bare scoped paths (space-separert, word-splittes av wrapper).
+# Scope = bade /data/sync/obsidian (vault) og /data/sync/claude-memory (capture-input).
+log "pre-flight: ssh filehub-cleanup ${FILEHUB_CLEAN_SCOPE}"
+# shellcheck disable=SC2086
 cleanup_out="$(ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 \
-  filehub-cleanup "${VAULT_ROOT_FILEHUB}" 2>&1)"
+  filehub-cleanup ${FILEHUB_CLEAN_SCOPE} 2>&1)"
 cleanup_status=$?
 
 log "filehub-cleanup output: ${cleanup_out}"

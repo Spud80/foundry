@@ -90,12 +90,26 @@ extract.py må IKKE kreve andre env-vars uten å oppdatere denne kontrakten før
 run.sh kjører følgende sjekker FØR extract.py:
 
 1. **`flock --nonblock ~/foundry/.deploy.lock`** - serialiserer mot auto-update.sh
-2. **`ssh filehub-cleanup ${VAULT_ROOT_FILEHUB}`** - rydder Syncthing-konflikter på filehub-siden
-   før ekstrakt. Exit 1 fra cleanup = konflikter funnet, run.sh exit 1 (transient).
+2. **`ssh filehub-cleanup <PATH+>`** - kjører `sync-conflict-cleanup.py --require-clean <PATH+>`
+   på filehub-siden via login-shell-wrapper (`/usr/local/bin/foundry-cleanup-login-shell`)
+   som auto-prepender `--require-clean`. Semantikk:
+   - Cleanup-scriptet skanner **alltid hele `/data/sync`** uavhengig av path-arg (idempotent
+     full-scan: identical-to-canonical-konflikter slettes, divergent quarantineres til
+     `/var/lib/syncthing-conflicts/<dato>/...` og rapporteres til vault-rapport).
+   - `--require-clean <PATH+>` aktiverer **exit-code-gate**: returnerer exit 1 hvis
+     én eller flere quarantines lander under noen av `<PATH+>`; ellers exit 0.
+   - Foundry sender `${FILEHUB_CLEAN_SCOPE}` (default
+     `/data/sync/obsidian /data/sync/claude-memory`) - paths uten mellomrom, word-splittes
+     av wrapper. Begge scoped fordi memory-extract leser fra vault og avhenger av at
+     claude-memory-capture også er konfliktfri.
+   - run.sh exit 1 ved cleanup-exit 1 (transient; cron prøver igjen neste dag).
 3. **Glob-assert** - hvis `8.Cortex/Memory/raw/` mangler eller er tom, exit 0 (no-op)
 4. **`timeout 30m`** rundt `.venv/bin/python extract.py` med std-args
 
 Hvis pre-flight feiler, kalles extract.py ikke i det hele tatt.
+
+**Wrapper-kontrakt:** wrapper aksepterer kun path-args (ingen flagg som `--dry-run` eller
+`--root` kan komme gjennom). Endringer i wrapper-grensesnittet eier device-sync-and-backup.
 
 ## Endringskontroll
 
