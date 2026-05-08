@@ -49,34 +49,80 @@ MANIFEST_FILENAME = "_capture-manifest.json"
 STATE_FILENAME = ".compile-state.json"
 SCRIPT_DIR = Path(__file__).resolve().parent
 
+# Bare-bones schema: types and required fields only. Strict constraints
+# (regex patterns, additionalProperties:false, minItems/maxItems, enum on
+# nested fields, minLength) trigger Claude's --json-schema strict-mode to
+# silently return an empty result with stop_reason=end_turn instead of
+# rejecting with an error. Empirically reproduced on foundry 2026-05-08:
+# 10/10 sessions returned `result: ""` despite output_tokens=1245. The
+# non-ASCII ¤ character in the topics-pattern is the most likely trigger,
+# but additionalProperties:false on nested objects and the combination of
+# multiple constraints also fail. We rely on Claude following the
+# constraints documented in system-prompt.md and validate post-hoc in
+# Python (see validate_entry below).
 OUTPUT_JSON_SCHEMA = {
     "type": "object",
-    "additionalProperties": False,
     "properties": {
         "entries": {
             "type": "array",
             "items": {
                 "type": "object",
-                "additionalProperties": False,
                 "required": ["type", "slug", "topics", "body", "date"],
                 "properties": {
                     "type": {"type": "string", "enum": list(TYPES)},
-                    "slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+                    "slug": {"type": "string"},
                     "topics": {
                         "type": "array",
-                        "minItems": 1,
-                        "maxItems": 5,
-                        "items": {"type": "string", "pattern": "^¤[a-z0-9-]+$"},
+                        "items": {"type": "string"},
                     },
-                    "modal": {"type": "string", "enum": ["actionable", "speculative", "question"]},
-                    "body": {"type": "string", "minLength": 1},
-                    "date": {"type": "string", "pattern": r"^\d{4}-\d{2}-\d{2}$"},
+                    "modal": {"type": "string"},
+                    "body": {"type": "string"},
+                    "date": {"type": "string"},
                 },
             },
         },
     },
     "required": ["entries"],
 }
+
+SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+TOPIC_RE = re.compile(r"^¤[a-z0-9-]+$")
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+VALID_MODALS = ("actionable", "speculative", "question")
+
+
+def validate_entry(entry: dict) -> list[str]:
+    """Return a list of constraint violations for a single entry. Empty list
+    means the entry passes Python-side validation. Caller skips the entry and
+    logs the violations when the list is non-empty.
+
+    Mirrors the constraints previously enforced by the JSON schema before they
+    were moved to Python (see OUTPUT_JSON_SCHEMA note above).
+    """
+    errs: list[str] = []
+    t = entry.get("type")
+    if t not in TYPES:
+        errs.append(f"type={t!r} not in {TYPES}")
+    slug = entry.get("slug", "")
+    if not isinstance(slug, str) or not SLUG_RE.match(slug):
+        errs.append(f"slug={slug!r} not kebab-case")
+    topics = entry.get("topics")
+    if not isinstance(topics, list) or not (1 <= len(topics) <= 5):
+        errs.append(f"topics must be a list of 1-5 items, got {topics!r}")
+    else:
+        for i, tag in enumerate(topics):
+            if not isinstance(tag, str) or not TOPIC_RE.match(tag):
+                errs.append(f"topics[{i}]={tag!r} does not match ^¤[a-z0-9-]+$")
+    modal = entry.get("modal")
+    if modal is not None and modal not in VALID_MODALS:
+        errs.append(f"modal={modal!r} not in {VALID_MODALS}")
+    body = entry.get("body", "")
+    if not isinstance(body, str) or not body.strip():
+        errs.append("body is empty or not a string")
+    date = entry.get("date", "")
+    if not isinstance(date, str) or not DATE_RE.match(date):
+        errs.append(f"date={date!r} does not match YYYY-MM-DD")
+    return errs
 
 QUARTER_TEMPLATE = """---
 type: {type}
@@ -320,12 +366,18 @@ def call_claude(
         raise RuntimeError(
             f"claude exit {proc.returncode}: {proc.stderr[:500]}"
         )
-    # claude --output-format json wraps the response. Extract the result text.
+    # claude --output-format json wraps the response. Field placement depends
+    # on whether --json-schema is in use (foundry-verified 2026-05-08):
+    #   - With --json-schema: validated output goes to wrapper["structured_output"]
+    #     as an already-parsed dict; wrapper["result"] is empty string.
+    #   - Without --json-schema: wrapper["result"] is the raw text (often
+    #     markdown-fenced JSON) and structured_output is absent.
     try:
         wrapper = json.loads(proc.stdout)
     except json.JSONDecodeError as e:
         raise RuntimeError(f"claude stdout not JSON: {e}; raw[:200]={proc.stdout[:200]}")
-    # Wrapper format from claude CLI: {"type":"result","result":"...", "is_error":false, ...}
+    if isinstance(wrapper, dict) and isinstance(wrapper.get("structured_output"), dict):
+        return wrapper["structured_output"]
     if isinstance(wrapper, dict) and "result" in wrapper:
         result_text = wrapper["result"]
     else:
@@ -395,12 +447,15 @@ def process_session(
     )
     entries = response.get("entries", [])
     written = 0
-    for entry in entries:
+    for idx, entry in enumerate(entries):
         # Validate intent has modal
-        if entry["type"] == "intent" and not entry.get("modal"):
+        if entry.get("type") == "intent" and not entry.get("modal"):
             print(f"  WARN: intent entry without modal in {session_id}, defaulting to speculative", file=sys.stderr)
             entry["modal"] = "speculative"
-        # Determine target quarter file from entry's own date
+        violations = validate_entry(entry)
+        if violations:
+            print(f"  WARN: skipping entry {idx} in {session_id}: {'; '.join(violations)}", file=sys.stderr)
+            continue
         q = quarter_for(entry["date"])
         target = ensure_quarter_file(extracted_dir, entry["type"], q)
         block = format_heading_block(entry, date=date, session_id=session_id)
