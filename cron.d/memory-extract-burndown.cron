@@ -1,0 +1,10 @@
+# memory-extract-burndown: nattlig batch-burndown av pending-ko.
+# Tidspunkt: 23:00 norsk lokal-tid (start off-peak 2x token-bonus-vindu).
+# Looper extract.py i 30m-segmenter til pending=0 eller klokka >= 08:00.
+# Re-acquirer flock per segment sa auto-update */15 far plass mellom.
+# State (.compile-state.json) oppdateres atomisk per session inne i extract.py;
+# restart mellom segmenter er gratis. Hvis pending=0 ved start: no-op exit 0.
+#
+# Format: 5-felt user-crontab (deploy.sh konkatenerer til claude sin crontab).
+
+0 23 * * * cd /home/claude/foundry/jobs/memory-extract && ./burndown.sh
