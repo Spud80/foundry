@@ -137,6 +137,7 @@ nøytralt-passer-gjennom alle entries uavhengig av tier.
 | `aliases.yaml` finnes men er corrupt YAML | Hard fail: notify Telegram `(FATAL)`, exit 2. Korrupt config er sterkere signal enn manglende - krever manuell fix før neste cron |
 | `aliases.yaml` har tom `canonicals: {}` | Behandles som "ingen aliases definert" - extract kjører uten normalisering, ingen WARNING (gyldig tilstand før bootstrap er kjørt) |
 | Schema-version-mismatch (extract.py sin minimum > aliases.yaml sin schema_version) | Hard fail exit 2, samme begrunnelse som corrupt YAML |
+| `aliases.yaml.sync-conflict-*` finnes i vault | Fanget av eksisterende run.sh pre-flight (`ssh filehub-cleanup --require-clean /data/sync/obsidian /data/sync/claude-memory`). Cleanup-scriptet quarantines conflict-fila som "ukjent type" til `/var/lib/syncthing-conflicts/<dato>/` og returnerer exit 1; run.sh aborter med Telegram-varsel før extract.py kalles. Ingen ekstra håndtering nødvendig i extract.py |
 
 ### Python-deps
 
