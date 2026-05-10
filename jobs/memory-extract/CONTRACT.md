@@ -92,6 +92,65 @@ dette internt og returnerer exit 0 stille hvis raw/ er tom.
 `--dry-run` eller `--root` kan komme gjennom). Endringer i wrapper-grensesnittet eier
 device-sync-and-backup.
 
+## Aliases-konsumering (cross-plan-koordinering 2026-05-10)
+
+Producer-side topic-normalisering for å løse fragmentering i `extracted/`-laget (nær-
+identiske `¤topic`-tags som `¤claude-code-skills` vs `¤claude-skills`). extract.py
+konsumerer `aliases.yaml` i to mekanismer:
+
+1. **Canonical vocabulary-injection i system-prompt** - ved start leses kanoniske slugs
+   fra aliases.yaml og injecter inn i `--append-system-prompt` som "preferred topic
+   vocabulary" så LLM-en konvergerer på kilden, ikke i post-prosess.
+2. **Alias→canonical post-prosess-mapping** - LLM-output-tags som matcher en alias-
+   oppføring rewrites til canonical før heading-blokker skrives til `extracted/`. Safety-
+   net når LLM ignorerer system-prompt-hint.
+
+### Path og format
+
+| Aspekt | Verdi |
+|--------|-------|
+| Path | `${OBSIDIAN_VAULT_ROOT}/8.Cortex/Memory/aliases.yaml` |
+| Format | YAML (skjema-autoritet i `memory-knowledge-contract.md`) |
+| Eier | obsidian-memory (write); foundry er konsument-only |
+| Sync-kanal | Syncthing-folder `obsidian` (samme som vault-resten) |
+
+### Felter foundry-extract leser
+
+- `canonicals[<slug>].aliases[]` - liste av synonym-slugs som mappes til `<slug>`
+- `canonicals[<slug>]` (slug i seg selv) - canonical vocabulary for system-prompt-injection
+
+### Felter foundry-extract IKKE leser
+
+- `tier` (signal/noise/archived)
+- `tier_confidence` (low/medium/high)
+- `tier_rationale`
+- `description`
+
+Disse konsumeres kun av obsidian-memory G3 detect og bruker-review-flow. Foundry
+nøytralt-passer-gjennom alle entries uavhengig av tier.
+
+### Fail-modes
+
+| Tilstand | Foundry-respons |
+|----------|-----------------|
+| `aliases.yaml` mangler | Graceful degrade: extract kjører uten normalisering, WARNING via `_shared/notify` ("aliases.yaml ikke tilstede - kjører uten normalisering"), exit 0 |
+| `aliases.yaml` finnes men er corrupt YAML | Hard fail: notify Telegram `(FATAL)`, exit 2. Korrupt config er sterkere signal enn manglende - krever manuell fix før neste cron |
+| `aliases.yaml` har tom `canonicals: {}` | Behandles som "ingen aliases definert" - extract kjører uten normalisering, ingen WARNING (gyldig tilstand før bootstrap er kjørt) |
+| Schema-version-mismatch (extract.py sin minimum > aliases.yaml sin schema_version) | Hard fail exit 2, samme begrunnelse som corrupt YAML |
+
+### Python-deps
+
+YAML-parsing krever `pyyaml>=6.0` i `requirements.txt`. Tillegget importeres ved Phase 700-
+import fra obsidian-memory; deploy.sh sin fingerprint-cache regenererer venv automatisk
+ved requirements.txt-endring (Phase 500-mekanikk, ingen ny logikk nødvendig).
+
+### Endringskontroll for aliases-konsumering
+
+aliases.yaml sitt skjema (felter, type-enum, struktur) eies av obsidian-memory via
+`memory-knowledge-contract.md`. Foundry abonnerer; bumps i skjema-version koordineres
+mellom obsidian-memory og foundry før producer endrer. Foundry oppdaterer egen
+`minimum-supported-schema-version` i `[[SPEC-foundry]]` ved breaking changes.
+
 ## Endringskontroll
 
 * Endringer i runtime-grensesnittet (env-vars, exit-codes, pre-flight-rekkefølge) krever
