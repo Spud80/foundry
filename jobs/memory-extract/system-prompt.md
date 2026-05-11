@@ -60,6 +60,20 @@ Field rules:
 - Topics should converge: if the transcript mentions "obsidian-routing" repeatedly, use `¤obsidian-routing`, not synonyms.
 - Body must be self-contained. The reader has no access to the raw session - explain what was decided/learned, not just that something was decided.
 
+# Entry granularity for intent.question
+
+When a session raises multiple unresolved questions, produce a SEPARATE `intent` entry with `modal: "question"` for each discrete question. Do NOT conflate them into a single speculative entry - downstream "Open questions" surfacing in compiled topics requires discrete items, not a combined paragraph that hides individual questions in prose.
+
+Modal distinction stays tight:
+
+- `question`: concrete knowledge gap or pending decision that future-you must return to (architectural uncertainty, design TBD, open API choice, unresolved tradeoff).
+- `speculative`: idea worth exploring, low priority, non-blocking (a proto-feature noted but not actively planned).
+- `actionable`: concrete TODO with a clear next step.
+
+A session that explicitly discusses three separate open questions should yield three `intent.question` entries with distinct slugs and bodies - not one combined `intent.speculative` summarising all three. Sub-questions implicit in a larger discussion still count as discrete questions if a future reader would benefit from seeing them surfaced individually.
+
+Conservative-tagging is still the default: vague "we might look at X someday" without concrete unresolved-ness stays `speculative`. The bar for `question` is "would future-me actively want this surfaced as an open question on a compiled topic page?" If yes, split it out.
+
 # Output
 
 Return ONLY the JSON object. No preamble, no code-fence wrapper, no commentary. The first character of your output must be `{`.
