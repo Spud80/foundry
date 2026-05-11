@@ -152,6 +152,64 @@ aliases.yaml sitt skjema (felter, type-enum, struktur) eies av obsidian-memory v
 mellom obsidian-memory og foundry før producer endrer. Foundry oppdaterer egen
 `minimum-supported-schema-version` i `[[SPEC-foundry]]` ved breaking changes.
 
+## Sources-append-konsumering (cross-plan-koordinering 2026-05-10, Phase 800)
+
+Etter at en heading-blokk er skrevet til `extracted/<type>-YYYY-QN.md` gjør extract.py
+en post-write pass mot `compiled/<canonical>.md`-filer per entry: for hver canonical-tag
+i entry.topics (etter K5 alias-resolving) sjekker den om `compiled/<canonical>.md`
+finnes; hvis ja, atomic-append'es `- [[<date>/<session-id>]] - <heading-slug>` under
+`## Sources`-seksjonen. Auto-creates `## Sources`-seksjonen på EOF hvis den mangler.
+
+Spec-autoritet: `dev-environment/docs/reference/memory-knowledge-contract.md`
+"Compiled-update protocol" → "Sources layer".
+
+### Path og format
+
+| Aspekt | Verdi |
+|--------|-------|
+| Path | `${OBSIDIAN_VAULT_ROOT}/8.Cortex/Memory/compiled/<canonical>.md` |
+| Source-link-format | `- [[<YYYY-MM-DD>/<session-id>]] - <kebab-case-slug>` (`<date>/<session-id>` matcher source-raw-fila per heading-blokk-spec) |
+| Eier | obsidian-memory G3a-2 oppretter compiled/-filer; foundry-extract bare appender source-links til `## Sources` |
+| Sync-kanal | Syncthing-folder `obsidian` (samme som vault-resten) |
+
+### Idempotency-garanti
+
+extract.py sjekker om source-link allerede er til stede i `compiled/<canonical>.md`
+før append (substring-match). Re-runs på samme session produserer aldri duplikat-
+source-links. Dette gjelder også cross-cron-grensen: hvis en session re-prosesseres
+manuelt etter state-fil-rebuild, vil source-links ikke duplikere.
+
+### Atomic-write-mekanikk
+
+POSIX (production foundry-Linux):
+- Sidecar lock-fil: `<dir>/.<filename>.lock`
+- `fcntl.flock(LOCK_EX)` på lock-fila før read-modify-write
+- Data-fil skrives via `atomic_write()` (temp + `os.replace`-rename) under lock-hold
+- Lock slippes etter rename
+- Concurrent extract.py-prosesser serialiseres trygt; loser-write's content er
+  preservert via lock-await + re-read
+
+Windows (lokale smoke-tests):
+- `fcntl` ikke tilgjengelig → lock er best-effort no-op
+- Production-environment er Linux, så dette gjelder ikke cron-runtime
+- Smoke-test `_test/smoke_k5_k6.py` verifiserer atomicity strict på POSIX,
+  best-effort på Windows
+
+### Fail-modes (Sources-append)
+
+| Tilstand | Foundry-respons |
+|----------|-----------------|
+| `compiled/<canonical>.md` finnes ikke | Status `missing`, no-op (extracted/ er ground-truth - obsidian-memory G3a-2 oppretter compiled-filer separat ved threshold) |
+| `compiled/<canonical>.md` finnes, source-link allerede til stede | Status `already-present`, idempotent skip |
+| Transient I/O-feil ved lock/read/write | Status `error: <msg>` logges til stderr; entry-prosessering fortsetter (extracted/-skrivingen er allerede committet, extracted/ er ground-truth) |
+| `## Sources`-seksjonen mangler i en eksisterende compiled-fil | Seksjonen auto-creates på EOF og source-link skrives inn |
+
+### Endringskontroll for Sources-append
+
+Source-link-format og atomic-append-semantikk eies av obsidian-memory via
+`memory-knowledge-contract.md` "Compiled-update protocol" → "Sources layer".
+Foundry abonnerer; format-bumps koordineres samme som schema_version-bumps.
+
 ## Endringskontroll
 
 * Endringer i runtime-grensesnittet (env-vars, exit-codes, pre-flight-rekkefølge) krever
