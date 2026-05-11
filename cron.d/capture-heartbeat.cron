@@ -1,0 +1,10 @@
+# capture-heartbeat: daglig sjekk av filehub memory-capture liveness.
+# Aktiveres av Phase 500 deploy.sh (regenererer claude-bruker sin crontab fra cron.d/*.cron).
+# Format: standard user-crontab (5-field, ingen user-felt - deploy.sh konkatenerer til claude sin crontab).
+# Tidspunkt: 19:00 norsk lokal-tid - 1t buffer etter filehub capture-cron 18:00 (cross-ref nedenfor).
+#
+# Pair with dev-environment scripts/memory/memory-capture.cron (must run >=1h
+# after that; window is 25h per PLAN-memory-pipeline-hardening Phase 200).
+# capture-heartbeat.sh exit-er alltid 0; alarmer gar via Telegram-notify-stack.
+
+0 19 * * * /home/claude/foundry/_shared/capture-heartbeat.sh
