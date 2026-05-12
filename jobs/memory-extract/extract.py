@@ -471,6 +471,27 @@ def discover_raw_sessions(raw_root: Path) -> list[tuple[str, str, Path]]:
 
 # ----- Claude subprocess -----
 
+# Oversize-fallback: Sonnet's 200K context rejects raw transcripts > ~700KB
+# (~230K tokens) with `is_error: true, result: "Prompt is too long"` in stdout JSON
+# and exit=1 with empty stderr. Opus 4.7 with 1M context handles these on
+# Claude Max subscription without the paid 1M add-on (verified 2026-05-12);
+# Sonnet's 1M variant `claude-sonnet-4-6[1m]` requires the add-on, Opus's
+# `claude-opus-4-7[1m]` does not.
+OVERSIZED_CONTEXT_MODEL = "claude-opus-4-7[1m]"
+OVERSIZED_ERROR_MARKERS = ("Prompt is too long", "prompt is too long")
+
+
+def _is_oversize_error(stdout: str) -> bool:
+    try:
+        d = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return False
+    if not isinstance(d, dict) or not d.get("is_error"):
+        return False
+    result = d.get("result", "")
+    return isinstance(result, str) and any(m in result for m in OVERSIZED_ERROR_MARKERS)
+
+
 def call_claude(
     raw_text: str,
     *,
@@ -484,32 +505,52 @@ def call_claude(
     # env-var read), which is exactly the auth surface we depend on. Use
     # --system-prompt to fully override default Claude Code system prompt
     # (avoids tool-mention bloat and auto-memory loop risk).
-    cmd = [
-        "claude", "-p",
-        "--no-session-persistence",
-        "--output-format", "json",
-        "--json-schema", json.dumps(OUTPUT_JSON_SCHEMA),
-        "--system-prompt", system_prompt,
-        "--model", model,
-    ]
-    if fallback_model:
-        cmd += ["--fallback-model", fallback_model]
-    if max_budget_usd is not None:
-        cmd += ["--max-budget-usd", str(max_budget_usd)]
-    # Pass raw transcript via stdin to avoid argv-length limits and to keep
-    # claude from misparsing leading `---` as an option flag.
-    cmd += ["--input-format", "text"]
+    def _build_cmd(m: str) -> list[str]:
+        c = [
+            "claude", "-p",
+            "--no-session-persistence",
+            "--output-format", "json",
+            "--json-schema", json.dumps(OUTPUT_JSON_SCHEMA),
+            "--system-prompt", system_prompt,
+            "--model", m,
+        ]
+        if fallback_model:
+            c += ["--fallback-model", fallback_model]
+        if max_budget_usd is not None:
+            c += ["--max-budget-usd", str(max_budget_usd)]
+        # Pass raw transcript via stdin to avoid argv-length limits and to keep
+        # claude from misparsing leading `---` as an option flag.
+        c += ["--input-format", "text"]
+        return c
 
     proc = subprocess.run(
-        cmd,
+        _build_cmd(model),
         input=raw_text,
         capture_output=True,
         text=True,
         encoding="utf-8",
     )
+
+    if proc.returncode != 0 and _is_oversize_error(proc.stdout) and model != OVERSIZED_CONTEXT_MODEL:
+        print(
+            f"  oversize: '{model}' returned 'Prompt is too long' "
+            f"({len(raw_text)} chars), retrying with {OVERSIZED_CONTEXT_MODEL}",
+            file=sys.stderr,
+        )
+        proc = subprocess.run(
+            _build_cmd(OVERSIZED_CONTEXT_MODEL),
+            input=raw_text,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+
     if proc.returncode != 0:
+        # Include stdout snippet: claude often surfaces the actual error there
+        # (e.g. "Prompt is too long") with empty stderr, especially on api-errors.
         raise RuntimeError(
-            f"claude exit {proc.returncode}: {proc.stderr[:500]}"
+            f"claude exit {proc.returncode}: "
+            f"stderr={proc.stderr[:300]!r} stdout={proc.stdout[:300]!r}"
         )
     # claude --output-format json wraps the response. Field placement depends
     # on whether --json-schema is in use (foundry-verified 2026-05-08):
