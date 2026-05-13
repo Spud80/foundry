@@ -1,0 +1,16 @@
+# fallback-classifier: foundry-Claude headless cron som handterer pending-foundry-*.md
+# Tidspunkt: 03:00 norsk lokal-tid (low-load window per capture-vocabulary.md
+# "Foundry-fallback classifier"; mellom natt-Kopia-backup og 04:00-audit).
+# Kjorer ~/foundry/jobs/fallback-classifier/run.sh.
+#
+# Phase 900 deployes med payload-guard: cron-fila er aktiv, men run.sh exit'er 0
+# stille hvis classify.py eller system-prompt.md mangler (samme monster som
+# memory-extract Phase 500/600 pre-Phase-600-aktivering).
+#
+# Lock-serialisering: deler ~/foundry/.deploy.lock med auto-update */15,
+# memory-extract 18:30 og audit 04:00. 03:00-vinduet er valgt for a unnga
+# kollisjon mot auto-updates 17:55/18:10/18:25-pattern og memory-extract 18:30.
+#
+# Format: 5-felt user-crontab (deploy.sh konkatenerer til claude sin crontab).
+
+0 3 * * * cd /home/claude/foundry/jobs/fallback-classifier && ./run.sh
