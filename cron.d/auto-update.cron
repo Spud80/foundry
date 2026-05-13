@@ -1,8 +1,11 @@
-# auto-update: defensiv git-flow */15 min.
+# auto-update: defensiv git-flow hver 15. min, off-grid.
 # Pulleer origin/dev (eller FOUNDRY_BRANCH satt i auto-update.sh), kjorer
 # deploy.sh innenfor flock-window. Logger til ~/foundry/logs/auto-update.log.
 # Watchdog (timesvis cron via /etc/cron.d/foundry-watchdog) forventer OK-linje
-# innenfor 45 min - vinduet er kalibrert mot */15 + watchdog-intervall 60 min.
+# innenfor 45 min - vinduet er kalibrert mot 15-min-intervall + watchdog 60 min.
+#
+# Skjema 10,25,40,55 (ikke */15) holder jobben 5 min foran enhver hel/halv
+# time slik at andre jobber pa :00 eller :30 ikke kolliderer pa .deploy.lock.
 # Format: 5-felt user-crontab (deploy.sh konkatenerer til claude sin crontab).
 
-*/15 * * * * /home/claude/foundry/auto-update.sh
+10,25,40,55 * * * * /home/claude/foundry/auto-update.sh
