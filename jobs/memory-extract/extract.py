@@ -941,12 +941,12 @@ def main(argv: list[str] | None = None) -> int:
         if not args.dry_run:
             state["processed_session_ids_by_date"].setdefault(date, []).append(sid)
             state["sessions_pending_count"] = max(0, state["sessions_pending_count"] - 1)
-            # Per-session last_success_at update. Without this, burndown.sh
-            # segments (which always end via `timeout 30m` SIGTERM, never via
-            # extract.py's clean-exit block) leave last_success_at frozen at
-            # the previous clean run - misleading the session-start staleness
-            # warning. Updating per session reflects ground truth: this
-            # specific session was just processed successfully.
+            # Per-session last_success_at update. Without this, runs that end
+            # via `timeout 30m` SIGTERM (rather than extract.py's clean-exit
+            # block) leave last_success_at frozen at the previous clean run -
+            # misleading the session-start staleness warning. Updating per
+            # session reflects ground truth: this specific session was just
+            # processed successfully.
             state["last_success_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
             state["last_error"] = None
             save_state(state_path, state)  # atomic per session
