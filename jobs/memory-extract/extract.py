@@ -39,9 +39,21 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+
+# K6 Sources-append lives in a shared library so the CLI
+# (`memory-sources-append`) and this extract-cron use the exact same
+# atomic-rename / flock mechanics (G3a-4 Runde 10 acceptance: "ekte
+# ekstraksjon, ikke kopi"). The names below are re-exported for backward-
+# compat with smoke_k5_k6.py and any downstream importer of `extract`.
+from _k6_source_append import (  # noqa: F401  (re-export)
+    _HAS_FCNTL,
+    _SOURCES_HEADER_RE,
+    _insert_under_sources,
+    append_to_compiled_sources,
+    atomic_write,
+)
 
 SCHEMA_VERSION = 1
 TYPES = ("observation", "decision", "learning", "error", "pattern", "intent")
@@ -304,26 +316,9 @@ def resolve_topic(topic: str, alias_map: dict[str, str]) -> str:
     return "¤" + canonical
 
 
-# ----- Atomic write -----
-
-def atomic_write(target: Path, content: str, *, mode: int = 0o664) -> None:
-    """Atomic write with explicit chmod (preserves POSIX ACL mask on filehub)."""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=target.name + ".", suffix=".tmp", dir=str(target.parent))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
-            f.write(content)
-        os.replace(tmp, target)
-        try:
-            os.chmod(target, mode)
-        except OSError:
-            pass  # Windows / non-POSIX
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+# ``atomic_write`` is now imported from _k6_source_append (single source of
+# truth shared with the CLI). Re-exported above so existing call-sites in
+# this module need no change.
 
 
 def sha256_of(path: Path) -> str:
@@ -610,89 +605,24 @@ def append_block(target: Path, block: str) -> None:
     atomic_write(target, existing + block)
 
 
-# ----- Sources-append (K6: compiled/<canonical>.md ## Sources updates) -----
+def append_blocks(target: Path, blocks: list[str]) -> None:
+    """Append multiple heading-blocks in a single atomic write.
 
-_SOURCES_HEADER_RE = re.compile(r"^## Sources\s*$", re.M)
-
-try:
-    import fcntl as _fcntl  # POSIX file locks
-    _HAS_FCNTL = True
-except ImportError:  # Windows local smoke-tests
-    _fcntl = None  # type: ignore
-    _HAS_FCNTL = False
-
-
-def _insert_under_sources(content: str, line: str) -> str:
-    """Return content with ``line`` appended at end of ## Sources section.
-
-    Creates the section at EOF if missing. The line is inserted without
-    surrounding blank lines (Obsidian vault rule: no blank between list items).
+    Per-session batching: equivalent to N append_block calls but one rename().
+    Shrinks the Syncthing race-window proportionally to entries-per-target.
     """
-    match = _SOURCES_HEADER_RE.search(content)
-    if not match:
-        # No Sources section yet - append at EOF
-        sep = "" if content.endswith("\n") else "\n"
-        return content + sep + "\n## Sources\n\n" + line + "\n"
-    header_end = match.end()
-    # Find next H2 after ## Sources, or EOF
-    next_h2_match = re.search(r"^## ", content[header_end:], re.M)
-    if next_h2_match:
-        section_end = header_end + next_h2_match.start()
-        section_body = content[header_end:section_end].rstrip()
-        new_section = section_body + "\n" + line + "\n\n"
-        return content[:header_end] + new_section + content[section_end:]
-    # ## Sources is the last section
-    section_body = content[header_end:].rstrip()
-    return content[:header_end] + section_body + "\n" + line + "\n"
+    if not blocks:
+        return
+    existing = target.read_text(encoding="utf-8") if target.exists() else ""
+    if not existing.endswith("\n"):
+        existing += "\n"
+    atomic_write(target, existing + "".join(blocks))
 
 
-def append_to_compiled_sources(compiled_path: Path, source_link: str) -> str:
-    """Atomic-append source-link to ## Sources in compiled file.
-
-    Returns:
-      'appended'         - line was added
-      'already-present'  - idempotent skip (line already in file)
-      'missing'          - compiled file does not exist (no-op)
-      'error: <msg>'     - transient I/O / lock failure; caller logs but does
-                           not abort (per contract: missing/transient compiled
-                           updates are no-op; ground-truth in extracted/)
-
-    Uses ``fcntl.flock`` on POSIX with a sidecar lock file to serialise
-    concurrent extract.py runs against the same compiled file. The atomic
-    rename via ``atomic_write`` keeps readers consistent. On non-POSIX
-    platforms (local Windows smoke-tests) the lock is a best-effort no-op;
-    production runs on foundry are Linux.
-    """
-    if not compiled_path.exists():
-        return "missing"
-    lock_path = compiled_path.parent / f".{compiled_path.name}.lock"
-    try:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        # Create lock file if missing; open r+ so we can hold flock without truncating
-        if not lock_path.exists():
-            lock_path.touch(exist_ok=True)
-    except OSError as e:
-        return f"error: lock setup: {e}"
-    try:
-        with open(lock_path, "r", encoding="utf-8") as lockf:
-            if _HAS_FCNTL:
-                _fcntl.flock(lockf.fileno(), _fcntl.LOCK_EX)
-            try:
-                existing = compiled_path.read_text(encoding="utf-8")
-            except FileNotFoundError:
-                return "missing"
-            except OSError as e:
-                return f"error: read: {e}"
-            if source_link in existing:
-                return "already-present"
-            new_content = _insert_under_sources(existing, source_link)
-            try:
-                atomic_write(compiled_path, new_content)
-            except OSError as e:
-                return f"error: write: {e}"
-            return "appended"
-    except OSError as e:
-        return f"error: lock: {e}"
+# ``append_to_compiled_sources`` + ``_insert_under_sources`` + ``_HAS_FCNTL``
+# are re-exported from _k6_source_append at the top of this module. The K6
+# logic is owned by that lib (single source of truth shared with the
+# ``memory-sources-append`` CLI).
 
 
 # ----- Per-session processing -----
@@ -733,6 +663,10 @@ def process_session(
     )
     entries = response.get("entries", [])
     written = 0
+    # Per-session batching: collect blocks per target, flush once at end of session.
+    # Cuts atomic_write count from N entries to M unique target files (typically 1-3),
+    # shrinking the Syncthing race-window between writes against the same file.
+    blocks_by_target: dict[Path, list[str]] = {}
     for idx, entry in enumerate(entries):
         # Validate intent has modal
         if entry.get("type") == "intent" and not entry.get("modal"):
@@ -748,7 +682,7 @@ def process_session(
         q = quarter_for(entry["date"])
         target = ensure_quarter_file(extracted_dir, entry["type"], q)
         block = format_heading_block(entry, date=date, session_id=session_id)
-        append_block(target, block)
+        blocks_by_target.setdefault(target, []).append(block)
         written += 1
         # K6: Sources-append for each canonical tag with an existing compiled file
         source_link = f"- [[{date}/{session_id}]] - {entry['slug']}"
@@ -773,6 +707,9 @@ def process_session(
             elif status.startswith("error:"):
                 # Best-effort: log but don't fail the session - extracted/ is ground truth
                 print(f"  WARN: sources-append {compiled_path.name}: {status}", file=sys.stderr)
+    # Flush batched blocks - one atomic_write per target instead of one per entry
+    for target, blocks in blocks_by_target.items():
+        append_blocks(target, blocks)
     return written
 
 
