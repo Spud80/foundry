@@ -10,4 +10,4 @@
 #
 # Format: 5-felt user-crontab (deploy.sh konkatenerer til claude sin crontab).
 
-30 18 * * * cd /home/claude/foundry/jobs/memory-extract && ./run.sh
+30 20 * * * cd /home/claude/foundry/jobs/memory-extract && ./run.sh

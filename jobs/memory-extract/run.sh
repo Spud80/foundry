@@ -31,7 +31,7 @@ OBSIDIAN_VAULT_ROOT="${OBSIDIAN_VAULT_ROOT:-${HOME}/vault/My Vault}"
 FILEHUB_CLEAN_SCOPE="${FILEHUB_CLEAN_SCOPE:-/data/sync/obsidian /data/sync/claude-memory}"
 EXTRACT_PY="${JOB_DIR}/extract.py"
 VENV_PYTHON="${JOB_DIR}/.venv/bin/python"
-EXTRACT_TIMEOUT="${EXTRACT_TIMEOUT:-30m}"
+EXTRACT_TIMEOUT="${EXTRACT_TIMEOUT:-60m}"
 
 mkdir -p "$(dirname "$LOG_FILE")"
 
