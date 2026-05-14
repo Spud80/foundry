@@ -42,30 +42,45 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# K6 Sources-append lives in a shared library so the CLI
+# K6 Sources-append + aliases-loading live in a shared library so the CLI
 # (`memory-sources-append`) and this extract-cron use the exact same
-# atomic-rename / flock mechanics (G3a-4 Runde 10 acceptance: "ekte
-# ekstraksjon, ikke kopi"). The names below are re-exported for backward-
-# compat with smoke_k5_k6.py and any downstream importer of `extract`.
+# atomic-rename / flock mechanics AND aliases-loading semantics (G3a-4
+# Runde 10 acceptance: "ekte ekstraksjon, ikke kopi"; aliases-relocation
+# 2026-05-14 to unblock /usr/local/bin/-only deploy on foundry-CT where
+# extract.py is NOT in sys.path). The names below are re-exported for
+# backward-compat with smoke_k5_k6.py and any downstream importer of
+# `extract` (e.g. `extract.load_aliases`, `extract.AliasesError`).
 from _k6_source_append import (  # noqa: F401  (re-export)
     _HAS_FCNTL,
     _SOURCES_HEADER_RE,
     _insert_under_sources,
+    ALIASES_FILENAME,
+    AliasesError,
+    MIN_ALIASES_SCHEMA_VERSION,
     append_to_compiled_sources,
     atomic_write,
+    load_aliases,
 )
 
 SCHEMA_VERSION = 1
 TYPES = ("observation", "decision", "learning", "error", "pattern", "intent")
 MANIFEST_FILENAME = "_capture-manifest.json"
 STATE_FILENAME = ".compile-state.json"
-ALIASES_FILENAME = "aliases.yaml"
 COMPILED_DIRNAME = "compiled"
-# Aliases.yaml schema floor. Per SPEC-foundry: extract.py hard-fails exit 2 when
-# aliases.yaml.schema_version > this minimum (frozen-version semantic, not
-# forward-compatible across major bumps).
-MIN_ALIASES_SCHEMA_VERSION = 1
+# Raw-side schema floor (H5, 2026-05-14). Per memory-knowledge-contract.md
+# raw-frontmatter contains `raw_schema_version: N`. Pre-H5 files carry only
+# legacy `contract-version: 1`; we accept those as version-1-equivalent for
+# backward-compat reads of the 4749+ historical raw-files. A future
+# raw_schema_version > MIN aborts FATAL (exit 2) to force coordinated bump
+# rather than silently feeding incompatible raw-format to the LLM.
+MIN_RAW_SCHEMA_VERSION = 1
 SCRIPT_DIR = Path(__file__).resolve().parent
+
+# H5: raw-frontmatter parsing for schema-version validation. Lightweight
+# regex (avoids PyYAML dependency for this single check). The frontmatter
+# fence is exactly `---\n...\n---` per _jsonl_format.format_jsonl().
+_RAW_FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---", re.DOTALL)
+_RAW_INT_FIELD_RE = re.compile(r"^(\w[\w-]*):\s*(\d+)\s*$", re.MULTILINE)
 
 # Bare-bones schema: types and required fields only. Strict constraints
 # (regex patterns, additionalProperties:false, minItems/maxItems, enum on
@@ -213,77 +228,61 @@ def notify(message: str) -> None:
     print(f"NOTIFY: {message}", file=sys.stderr)
 
 
+# ----- Raw-schema validation (H5: producer-side version contract) -----
+
+class RawSchemaError(Exception):
+    """Raised for hard-fail raw-schema conditions (missing frontmatter,
+    missing both raw_schema_version and legacy contract-version, or
+    raw_schema_version > MIN_RAW_SCHEMA_VERSION). Caller exits 2 + FATAL notify.
+    """
+
+
+def validate_raw_schema(raw_text: str, raw_path: Path) -> None:
+    """Validate raw-file schema version. Returns None on success.
+
+    Accepts (per memory-knowledge-contract.md Raw-files section):
+      - New format: `raw_schema_version: N` (preferred). Aborts if N > MIN.
+      - Legacy format: `contract-version: N` only (pre-H5 raw-files, ~4749
+        historical). Accepted version-agnostically since legacy bump-policy
+        was not version-validated by extract.py; the field exists purely
+        for forwards-deprecation. Coordinated migration drops it after
+        90-day organic turnover.
+      - New + legacy both present (transition window): preferred field wins.
+
+    Aborts FATAL (raises RawSchemaError) when:
+      - Frontmatter fence missing
+      - Neither raw_schema_version nor contract-version present
+      - raw_schema_version > MIN_RAW_SCHEMA_VERSION (forces coordinated bump)
+
+    contract-version > MIN is NOT a FATAL by design - legacy field has no
+    enforced floor and historical files may carry inflated values from
+    earlier experiments. The H5 contract is enforced via the new field.
+    """
+    m = _RAW_FRONTMATTER_RE.match(raw_text)
+    if not m:
+        raise RawSchemaError(f"{raw_path.name}: frontmatter fence missing")
+    fm_text = m.group(1)
+    raw_v: int | None = None
+    legacy_v: int | None = None
+    for match in _RAW_INT_FIELD_RE.finditer(fm_text):
+        field, value = match.group(1), int(match.group(2))
+        if field == "raw_schema_version":
+            raw_v = value
+        elif field == "contract-version":
+            legacy_v = value
+    if raw_v is None and legacy_v is None:
+        raise RawSchemaError(
+            f"{raw_path.name}: missing both raw_schema_version and "
+            f"contract-version - cannot determine schema compatibility"
+        )
+    if raw_v is not None and raw_v > MIN_RAW_SCHEMA_VERSION:
+        raise RawSchemaError(
+            f"{raw_path.name}: raw_schema_version={raw_v} exceeds extract.py "
+            f"minimum-supported={MIN_RAW_SCHEMA_VERSION} - coordinated bump required"
+        )
+
+
 # ----- Aliases (K5: producer-side topic normalisation) -----
-
-class AliasesError(Exception):
-    """Raised for hard-fail aliases conditions (corrupt YAML, schema mismatch).
-    Caller exits 2 + notifies FATAL.
-    """
-
-
-def load_aliases(memory_dir: Path) -> tuple[dict[str, str], list[str], str]:
-    """Load aliases.yaml. Returns (alias_to_canonical_map, canonical_list, status).
-
-    Map contains alias-slug -> canonical-slug PLUS canonical -> canonical
-    self-entries (idempotent for safety-net post-mapping).
-
-    Status values:
-      'ok'              - loaded successfully, alias_map populated
-      'missing'         - aliases.yaml not present in memory_dir (graceful degrade)
-      'empty'           - file loaded but canonicals: {} (no normalisation, no warn)
-
-    Raises AliasesError on corrupt YAML or schema-version mismatch (file
-    schema_version > MIN_ALIASES_SCHEMA_VERSION). Caller maps to exit 2 +
-    (FATAL) notify.
-    """
-    aliases_path = memory_dir / ALIASES_FILENAME
-    if not aliases_path.exists():
-        return ({}, [], "missing")
-    try:
-        import yaml  # local import - keeps script importable without pyyaml
-    except ImportError as e:
-        raise AliasesError(f"pyyaml not installed: {e}")
-    try:
-        raw = aliases_path.read_text(encoding="utf-8")
-        data = yaml.safe_load(raw)
-    except yaml.YAMLError as e:
-        raise AliasesError(f"aliases.yaml unparseable: {e}")
-    except OSError as e:
-        raise AliasesError(f"aliases.yaml read error: {e}")
-    if not isinstance(data, dict):
-        raise AliasesError("aliases.yaml root is not a mapping")
-    schema_v = data.get("schema_version")
-    if not isinstance(schema_v, int):
-        raise AliasesError(
-            f"aliases.yaml missing or non-integer schema_version (got {schema_v!r})"
-        )
-    if schema_v > MIN_ALIASES_SCHEMA_VERSION:
-        raise AliasesError(
-            f"aliases.yaml schema_version={schema_v} exceeds extract.py "
-            f"minimum-supported={MIN_ALIASES_SCHEMA_VERSION} - coordinated bump required"
-        )
-    canonicals = data.get("canonicals", {})
-    if not isinstance(canonicals, dict):
-        raise AliasesError("aliases.yaml.canonicals is not a mapping")
-    if not canonicals:
-        return ({}, [], "empty")
-    alias_map: dict[str, str] = {}
-    canonical_list: list[str] = []
-    for canon_slug, info in canonicals.items():
-        if not isinstance(canon_slug, str) or not canon_slug:
-            continue
-        canonical_list.append(canon_slug)
-        alias_map[canon_slug] = canon_slug  # idempotent self-map
-        if not isinstance(info, dict):
-            continue
-        aliases = info.get("aliases", [])
-        if not isinstance(aliases, list):
-            continue
-        for alias in aliases:
-            if isinstance(alias, str) and alias:
-                alias_map[alias] = canon_slug
-    return (alias_map, sorted(canonical_list), "ok")
-
 
 def build_vocab_section(canonicals: list[str]) -> str:
     """Render the canonical vocabulary block appended to system-prompt.
@@ -651,6 +650,7 @@ def process_session(
     exists. Idempotent + best-effort: errors logged, never abort the session.
     """
     raw_text = raw_path.read_text(encoding="utf-8")
+    validate_raw_schema(raw_text, raw_path)  # H5: raises RawSchemaError on FATAL
     if args.dry_run:
         print(f"  [dry-run] would call claude for {date}/{session_id}", file=sys.stderr)
         return 0
@@ -869,6 +869,15 @@ def main(argv: list[str] | None = None) -> int:
                 system_prompt=system_prompt,
                 args=args,
             )
+        except RawSchemaError as e:
+            # H5: FATAL exit 2. Schema-version mismatch is not a per-session
+            # skip - if one raw-file is incompatible, others may be too, and
+            # coordinated bump-policy requires explicit operator intervention.
+            notify(f"(FATAL) raw schema validation: {e}")
+            state["last_error"] = f"raw_schema: {e}"
+            state["last_attempt_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            save_state(state_path, state)
+            return 2
         except Exception as e:  # noqa: BLE001
             last_error = f"{date}/{sid}: {e}"
             print(f"  ERROR: {last_error}", file=sys.stderr)
