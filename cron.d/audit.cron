@@ -1,0 +1,17 @@
+# audit: foundry-Claude nightly audit-pass mot vault-content
+# Tidspunkt: 04:00 norsk lokal-tid (low-load window per audit-pass-spec.md
+# "Schedule"; mellom fallback-classifier 03:00 og morning-surface 05:00).
+# Kjorer ~/foundry/jobs/audit/run.sh.
+#
+# Phase 1000 deployes med payload-guard: cron-fila er aktiv, men run.sh exit'er 0
+# stille hvis audit.py eller system-prompt.md mangler (samme monster som
+# fallback-classifier Phase 900).
+#
+# Lock-serialisering: deler ~/foundry/.deploy.lock med auto-update */15,
+# memory-extract 18:30 og fallback-classifier 03:00. 04:00-vinduet gir
+# worst-case 03:00-fallback-spill-over (max 20 min) + 40 min headroom for
+# 05:00 cortex-annotations morning-surface.
+#
+# Format: 5-felt user-crontab (deploy.sh konkatenerer til claude sin crontab).
+
+0 4 * * * cd /home/claude/foundry/jobs/audit && ./run.sh
