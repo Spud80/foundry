@@ -5,6 +5,30 @@
 # sammen med notify-core.sh i samme dir. Ingen repo-avhengighet etter
 # setup-linux.sh er kjort - fungerer hvis ~/foundry/ slettes/flyttes.
 #
+# ----------------------------------------------------------------------------
+# !! UPDATING THIS FILE - manuell deploy kreves
+# ----------------------------------------------------------------------------
+# Denne fila er BEVISST utenfor deploy.sh / auto-update-pipelinen.
+# Begrunnelse: watchdogen skal varsle hvis auto-update er nede. Hvis
+# watchdogen oppdaterte seg selv via auto-update, ville en deploy.sh-bug
+# skjult selve feilen watchdogen er ment a fange. Robusthet > convenience.
+#
+# Ved endringer her (commit til foundry-repo):
+#   1. Commit + push som vanlig
+#   2. Manuell deploy til hver eksisterende CT:
+#        cat bootstrap/watchdog-notify.sh | ssh <host> \
+#          "cat > ~/.config/foundry/watchdog-notify.sh \
+#           && chmod 755 ~/.config/foundry/watchdog-notify.sh"
+#   3. Smoke-test pa CT:
+#        ssh <host> "bash ~/.config/foundry/watchdog-notify.sh 'smoke-test'"
+#        (skal emittere én Telegram-melding)
+#   4. Verifiser default-mode er silent:
+#        ssh <host> "bash ~/.config/foundry/watchdog-notify.sh; echo \$?"
+#        (skal exit 0 stille hvis ingen state-fil er stale)
+#
+# Nye CT-er trenger ikke manuell deploy: setup-linux.sh kopierer denne fila
+# fra bootstrap/ ved provisioning og far automatisk siste versjon.
+#
 # To modi:
 #   1. Default (kalt av cron uten args): kjor to uavhengige sjekker:
 #      a) ~/foundry/logs/auto-update.log: OK-linje innenfor siste
