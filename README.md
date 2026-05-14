@@ -25,7 +25,7 @@ auto-update.sh         Defensiv git-flow (fetch + reset --hard origin/$FOUNDRY_B
 
 ## Auto-deploy
 
-`auto-update.sh` cron `*/15 * * * *` puller fra `origin/$FOUNDRY_BRANCH` (default `dev` til pipeline er stabil; flippes til `main` senere) og kjører `deploy.sh` ved endringer. Push til den aktive branchen lander i produksjon innen 15 min.
+`auto-update.sh` cron `10,25,40,55 * * * *` puller fra `origin/$FOUNDRY_BRANCH` (default `dev` til pipeline er stabil; flippes til `main` senere) og kjører `deploy.sh` ved endringer. Push til den aktive branchen lander i produksjon innen 15 min. Off-grid-pattern (ikke `*/15`) for at delte-lock-jobber som memory-extract 18:30 og audit 04:00 skal få et rent vindu mot auto-update.
 
 Watchdog-cron (`/etc/cron.d/foundry-watchdog`, eier root, kjører timesvis) varsler via Telegram hvis auto-update-loggen mangler OK-linje > 45 min. Watchdog er bevisst uavhengig av `_shared/notify.sh` slik at en feil som broker auto-update også broker varslings-pipelinen.
 

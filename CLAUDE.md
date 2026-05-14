@@ -8,10 +8,10 @@ Lightweight Debian-12 unprivileged LXC (Proxmox VMID 102 på `thehub`) som hoste
 |-------|-------|
 | **Stack** | Bash + Python 3.11 (per-jobb venvs), system-cron som scheduler |
 | **Substrate** | Debian 12 unprivileged LXC, Proxmox VMID 102, Tailscale FQDN `foundry.tail8feda0.ts.net`, IP `10.0.0.52/24` |
-| **Status** | Phase 100-500 ferdig (CT live, deploy-pipeline + watchdog + CI grønn). Phase 600 deferred på obsidian-memory-leveranse. |
+| **Status** | Phase 100-800 ferdig. Phase 900 (fallback-classifier 03:00) + Phase 1000 (audit 04:00) strukturelt deployet + cron-aktivt; reelle ende-til-ende-fyringer mot syntetiske input organisk pågående. |
 | **Repository** | https://github.com/Spud80/foundry (PUBLIC per design) |
 | **Production** | LXC `foundry` på Proxmox host `thehub` |
-| **Version** | 0.5.0 (Phase 500 deploy-pipeline live) |
+| **Version** | 0.5.0 (Phase 500 deploy-pipeline live; Phase 600-1000-iterasjoner deployes via auto-update mot `origin/dev` uten formell version-bump - venter på post-stabilisering main-flipp) |
 
 ## Deployment Model (kritisk å forstå før commit)
 
@@ -61,7 +61,11 @@ ssh foundry "~/foundry/_shared/notify.sh 'manual test from CLAUDE.md'"
 | 300 | OAuth-token-auth + secrets-deploy + token-expiry-check | 0.4.0 | done |
 | 400 | Syncthing-peer mot filehub (vault + claude-memory bidirektional) | 0.4.5 | done |
 | 500 | Deploy-pipeline (deploy.sh, auto-update.sh) + notify-wrappers + CI smoke-test + memory-extract job-skeleton | 0.5.0 | done |
-| 600 | Memory-extract aktivering (Phase E payload-import fra obsidian-memory) | 1.0.0 | deferred |
+| 600 | Memory-extract aktivering (Phase E payload-import fra obsidian-memory; 18:30 norsk lokal-tid) | - | done |
+| 700 | Aliases.yaml producer-side normalisering i extract.py | - | done (strukturelt; steady-state-verifisering organisk) |
+| 800 | K6 Sources-append-pass i extract.py + dedikert `memory-sources-append`-CLI | - | done |
+| 900 | Foundry-fallback classifier-cron (03:00 norsk lokal-tid) for `pending-foundry-*.md` | - | strukturelt deployet 2026-05-13 commit `65357ed`; ende-til-ende-test pending PLAN-3X Phase 600 |
+| 1000 | Audit-pass nightly cron (04:00 norsk lokal-tid) - 6 audit-sjekker per `audit-pass-spec.md` | - | strukturelt deployet 2026-05-14 commit `fb8945e`; første reelle 04:00-fyring 2026-05-15 |
 
 ## Repo Layout
 
@@ -75,9 +79,11 @@ ssh foundry "~/foundry/_shared/notify.sh 'manual test from CLAUDE.md'"
 | `bootstrap/watchdog-notify.sh` | exists | Watchdog-entrypoint (check-mode + direct-send-mode), source'er notify-core |
 | `bootstrap/foundry-watchdog.cron` | exists | Root-eid timesvis cron, deployes til /etc/cron.d/ |
 | `bootstrap/logrotate.foundry` | exists | weekly × 12 rotate for ~/foundry/logs/ |
-| `cron.d/` | exists | Crontab-fragmenter: auto-update, drain-queue, memory-extract, token-expiry-check |
-| `_shared/` | exists | notify-core.sh + notify.sh + drain-queue.sh + token-expiry-check.sh |
-| `jobs/memory-extract/` | exists (skeleton) | Phase E memory-extract: run.sh + CONTRACT.md. Payload-guard inert til extract.py importeres |
+| `cron.d/` | exists | Crontab-fragmenter: auto-update (`10,25,40,55 * * * *`), drain-queue (`*/5`), memory-extract (`30 18`), fallback-classifier (`0 3`), audit (`0 4`), capture-heartbeat (`0 19`), token-expiry-check (`0 9`) |
+| `_shared/` | exists | notify-core.sh + notify.sh + drain-queue.sh + token-expiry-check.sh + capture-heartbeat.sh |
+| `jobs/memory-extract/` | exists (Phase 600+700+800) | Phase E memory-extract: run.sh + CONTRACT.md + extract.py (LLM-classify + K5 aliases-normalisering + K6 Sources-append) |
+| `jobs/fallback-classifier/` | exists (Phase 900) | Foundry-fallback classifier for `pending-foundry-*.md`: run.sh + CONTRACT.md + system-prompt.md + classify.py + smoke-test. Atomic mutate-first-then-rename + 4-state recovery-scan |
+| `jobs/audit/` | exists (Phase 1000) | Nattlig audit-pass per `dev-environment/docs/reference/audit-pass-spec.md`: run.sh + CONTRACT.md + system-prompt.md + audit.py + smoke-test. 6 audit-sjekker, tiered Telegram, rapport-fil til `5.Utility/Pipeline/Audit-Reports/YYYY-MM-DD.md`, heartbeat-state `~/.audit-state.json` |
 | `.github/workflows/smoke-test.yml` | exists | CI: shellcheck + cron-syntax + deploy-dry-run + notify-paritet |
 | `deploy.sh` | exists | Atomisk regenerering av claude-bruker-crontab fra cron.d/, idempotent venv-setup |
 | `auto-update.sh` | exists | Defensiv git-flow på CT (fetch + reset --hard origin/$FOUNDRY_BRANCH + deploy.sh) |
@@ -113,6 +119,8 @@ ssh foundry "~/foundry/_shared/notify.sh 'manual test from CLAUDE.md'"
 | `deploy.sh` | Atomisk crontab-swap, idempotent venv-setup med fingerprint-cache (sha256 av requirements.txt + python-versjon) |
 | `_shared/notify-core.sh` | Felles queue+drain-helpers; source'es av både notify.sh og watchdog-notify.sh - paritet enforced av CI |
 | `jobs/memory-extract/CONTRACT.md` | Leveranse-kontrakt mot obsidian-memory: env-vars, exit-codes, pre-flight, manifest-format-referanse |
+| `jobs/fallback-classifier/CONTRACT.md` | Phase 900 runtime-kontrakt: input `pending-foundry-*.md`, atomic mutate-first-then-rename, 4-state recovery-scan, exit-codes |
+| `jobs/audit/CONTRACT.md` | Phase 1000 runtime-kontrakt: 6 audit-sjekker, tier-policy (silent/lav/hoy/kritisk), atomic rapport-write, heartbeat-state semantikk. Spec-autoritet: `dev-environment/docs/reference/audit-pass-spec.md` |
 | `.gitignore` | Runtime-state ekskludert; secrets MÅ leve utenfor repo-treet |
 | `docs/ARCHITECTURE.md` | Deploy-flyt, komponent-diagram, modul-ansvar |
 | `CLAUDE.md` | Denne filen - Claude Code project-config |
@@ -128,6 +136,7 @@ ssh foundry "~/foundry/_shared/notify.sh 'manual test from CLAUDE.md'"
 - Auto-update kan ikke regenerere seg selv mens egen kjøring pågår - `.deploy.lock` enforcer single-flight. Ved BUSY: logg-fil får `touch_mtime_only` (ingen append) sa watchdog ikke alarmerer.
 - `ssh filehub-cleanup <PATH+>` har sideeffekt: full `/data/sync`-scan kjøres alltid (idempotent housekeeping) - det er ikke et read-only check. Wrapper auto-prepender `--require-clean`; caller sender bare path-args, ingen flagg kommer gjennom.
 - Path-arg til filehub-cleanup må være uten mellomrom (wrapper word-splitter); bruk folder-roots `/data/sync/obsidian /data/sync/claude-memory`, ikke subpath som inkluderer "My Vault".
+- `bootstrap/`-filer (`watchdog-notify.sh`, `notify-core.sh`, `foundry-watchdog.cron`) er BEVISST utenfor `deploy.sh` / auto-update-pipelinen. Self-monitoring må ikke bygge på det den overvåker. Endringer her krever manuell scp til eksisterende CT-er - prosedyre er dokumentert som header-banner i `bootstrap/watchdog-notify.sh`. Nye CT-er får siste versjon automatisk via `setup-linux.sh` ved provisioning.
 
 ## When Uncertain
 
