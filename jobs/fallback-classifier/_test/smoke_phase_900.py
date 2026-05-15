@@ -23,15 +23,21 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 # Make jobs/fallback-classifier importable
 JOB_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(JOB_DIR))
 
 import classify  # noqa: E402
+
+# Capture original call_claude before any test monkey-patches it. Retry-tests
+# (scenario 11+) need the real implementation to exercise the retry loop.
+_ORIG_CALL_CLAUDE = classify.call_claude
 
 PASS = "[PASS]"
 FAIL = "[FAIL]"
@@ -317,6 +323,132 @@ def test_filename_derivation() -> None:
             f"compound sid: derived={target2.name!r}")
 
 
+# ---------- Scenario 11-13: transient retry on 529 Overloaded ----------
+
+def _install_subprocess_mock(responses: list) -> dict:
+    """Mock classify.subprocess.run to return responses in order. Returns a
+    counter dict {'calls': N, 'inputs': [...]} the caller can inspect.
+
+    Each response is either a SimpleNamespace(returncode=..., stderr=..., stdout=...)
+    or an Exception instance to raise.
+    """
+    state = {"calls": 0, "inputs": []}
+    def mock_run(*args, **kwargs):
+        state["inputs"].append(kwargs.get("input", ""))
+        idx = state["calls"]
+        state["calls"] += 1
+        if idx >= len(responses):
+            raise AssertionError(f"mock_run called {idx+1} times, only {len(responses)} responses queued")
+        r = responses[idx]
+        if isinstance(r, Exception):
+            raise r
+        return r
+    classify.subprocess.run = mock_run
+    return state
+
+
+def _install_sleep_mock() -> list:
+    """Mock classify.time.sleep to record durations without sleeping."""
+    sleeps = []
+    classify.time.sleep = lambda s: sleeps.append(s)
+    return sleeps
+
+
+def _restore_subprocess() -> None:
+    classify.subprocess.run = subprocess.run
+
+
+def _restore_call_claude() -> None:
+    """Earlier scenarios (1-5) monkey-patch classify.call_claude with a lambda
+    that returns canned LLM output. Retry-tests need the real implementation.
+    """
+    classify.call_claude = _ORIG_CALL_CLAUDE
+
+
+def test_transient_retry_succeeds() -> None:
+    print("\n--- Scenario 11: transient 529 retry succeeds on third attempt ---")
+    ok_response = SimpleNamespace(
+        returncode=0,
+        stderr="",
+        stdout='{"result": "{\\"capture\\": \\"note\\", \\"intent\\": null}"}',
+    )
+    err_response = SimpleNamespace(
+        returncode=1,
+        stderr="API Error: 529 Overloaded",
+        stdout="",
+    )
+    _restore_call_claude()
+    state = _install_subprocess_mock([err_response, err_response, ok_response])
+    sleeps = _install_sleep_mock()
+    try:
+        result = classify.call_claude("body", {"foundry_pending": True}, "2026-05-15")
+        assert_(state["calls"] == 3, f"3 subprocess calls made (got {state['calls']})")
+        assert_(sleeps == [60, 180], f"backoff sequence 60s/180s (got {sleeps})")
+        assert_(result.get("capture") == "note", f"parsed capture=note (got {result!r})")
+    except Exception as e:
+        assert_(False, f"unexpected exception: {e}")
+    finally:
+        _restore_subprocess()
+
+
+def test_transient_retry_exhausted() -> None:
+    print("\n--- Scenario 12: transient 529 retry exhausted raises RuntimeError ---")
+    err_response = SimpleNamespace(
+        returncode=1,
+        stderr="anthropic API: 529 Overloaded",
+        stdout="",
+    )
+    _restore_call_claude()
+    state = _install_subprocess_mock([err_response, err_response, err_response])
+    sleeps = _install_sleep_mock()
+    try:
+        try:
+            classify.call_claude("body", {"foundry_pending": True}, "2026-05-15")
+            assert_(False, "expected RuntimeError, got success")
+        except RuntimeError as e:
+            msg = str(e)
+            assert_(state["calls"] == 3, f"3 subprocess calls made (got {state['calls']})")
+            assert_(sleeps == [60, 180], f"backoff 60s/180s before raising (got {sleeps})")
+            assert_("transient exhausted" in msg, f"error mentions 'transient exhausted' (got {msg[:200]!r})")
+    finally:
+        _restore_subprocess()
+
+
+def test_non_transient_fails_fast() -> None:
+    print("\n--- Scenario 13: non-transient claude failure fails fast (no retry) ---")
+    err_response = SimpleNamespace(
+        returncode=2,
+        stderr="invalid argument: --bogus",
+        stdout="",
+    )
+    _restore_call_claude()
+    state = _install_subprocess_mock([err_response])
+    sleeps = _install_sleep_mock()
+    try:
+        try:
+            classify.call_claude("body", {"foundry_pending": True}, "2026-05-15")
+            assert_(False, "expected RuntimeError, got success")
+        except RuntimeError as e:
+            msg = str(e)
+            assert_(state["calls"] == 1, f"only 1 subprocess call (got {state['calls']})")
+            assert_(sleeps == [], f"no backoff before raising (got {sleeps})")
+            assert_("transient exhausted" not in msg, f"error does NOT mention 'transient exhausted' (got {msg[:200]!r})")
+    finally:
+        _restore_subprocess()
+
+
+# ---------- Scenario 14: transient detector ----------
+
+def test_transient_detector() -> None:
+    print("\n--- Scenario 14: transient pattern detector ---")
+    assert_(classify._is_transient_claude_error("API: 529 Overloaded", ""), "detects '529'")
+    assert_(classify._is_transient_claude_error("", "rate_limit reached"), "detects 'rate_limit'")
+    assert_(classify._is_transient_claude_error("HTTP 503 Service Unavailable", ""), "detects '503'")
+    assert_(classify._is_transient_claude_error("Too Many Requests", ""), "detects 'too many requests' (case-insensitive)")
+    assert_(not classify._is_transient_claude_error("invalid argument", "syntax error"), "does NOT detect non-transient text")
+    assert_(not classify._is_transient_claude_error("", ""), "empty input not transient")
+
+
 # ---------- Driver ----------
 
 def main() -> int:
@@ -333,6 +465,10 @@ def main() -> int:
     test_validation_rejects_bad_enum()
     test_atomic_write_tempfile()
     test_filename_derivation()
+    test_transient_retry_succeeds()
+    test_transient_retry_exhausted()
+    test_non_transient_fails_fast()
+    test_transient_detector()
 
     print()
     print("=" * 60)

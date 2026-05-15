@@ -25,6 +25,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -49,6 +50,22 @@ INTENT_ENUM = {"followup", "reminder", "someday", "question", "decision", None}
 STATUS_ENUM = {"active", "snoozed", "superseded", "done", "archived"}
 
 CLAUDE_PER_FILE_TIMEOUT = int(os.environ.get("FALLBACK_CLAUDE_TIMEOUT_SECONDS", "1200"))  # 20m
+
+# In-process retry for transient Anthropic API errors (HTTP 529 Overloaded,
+# 503 Service Unavailable, rate-limit signals). Only retries on detected
+# transient patterns. Non-transient claude exits, timeouts, and parse errors
+# fail fast. RETRY_BACKOFF_SECONDS must be len >= RETRY_MAX_ATTEMPTS - 1.
+RETRY_MAX_ATTEMPTS = int(os.environ.get("FALLBACK_RETRY_MAX_ATTEMPTS", "3"))
+RETRY_BACKOFF_SECONDS = [60, 180]
+TRANSIENT_PATTERNS = (
+    "529",
+    "overloaded",
+    "rate_limit",
+    "rate limit",
+    "too many requests",
+    "503",
+    "502",
+)
 
 OUTPUT_JSON_SCHEMA = {
     "type": "object",
@@ -208,10 +225,23 @@ def _is_invalid_enum_value(field: str, value) -> bool:
     return value not in enum_set
 
 
+def _is_transient_claude_error(stderr: str, stdout: str) -> bool:
+    """True when claude -p output suggests an upstream Anthropic transient
+    error (529 Overloaded, 503, rate-limit). Substring match on lowered text.
+    """
+    combined = f"{stderr} {stdout}".lower()
+    return any(p in combined for p in TRANSIENT_PATTERNS)
+
+
 def call_claude(body: str, current_fm: dict, current_date: str) -> dict:
     """Invoke `claude -p` headless with --json-schema validation. Return parsed dict.
 
-    Raises RuntimeError on subprocess-failure, TimeoutExpired on per-file timeout.
+    Retries on transient upstream errors (529 Overloaded, 503, rate-limit) up
+    to RETRY_MAX_ATTEMPTS times with backoff. Non-transient claude failures
+    fail fast. TimeoutExpired propagates to caller (no retry on hard timeouts).
+
+    Raises RuntimeError on non-transient subprocess-failure or after retries
+    exhausted. Raises TimeoutExpired on per-file timeout.
     """
     system_prompt = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
 
@@ -239,20 +269,36 @@ def call_claude(body: str, current_fm: dict, current_date: str) -> dict:
         "--input-format", "text",
     ]
 
-    proc = subprocess.run(
-        cmd,
-        input=user_msg,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=CLAUDE_PER_FILE_TIMEOUT,
-    )
+    proc = None
+    for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
+        proc = subprocess.run(
+            cmd,
+            input=user_msg,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=CLAUDE_PER_FILE_TIMEOUT,
+        )
+        if proc.returncode == 0:
+            break
 
-    if proc.returncode != 0:
+        is_transient = _is_transient_claude_error(proc.stderr, proc.stdout)
+        more_attempts = attempt < RETRY_MAX_ATTEMPTS
+        if is_transient and more_attempts:
+            backoff = RETRY_BACKOFF_SECONDS[attempt - 1]
+            log(
+                f"  transient claude error attempt {attempt}/{RETRY_MAX_ATTEMPTS} "
+                f"(exit {proc.returncode}) - backing off {backoff}s"
+            )
+            time.sleep(backoff)
+            continue
+
+        suffix = f" after {RETRY_MAX_ATTEMPTS} attempts (transient exhausted)" if is_transient else ""
         raise RuntimeError(
-            f"claude exit {proc.returncode}: "
+            f"claude exit {proc.returncode}{suffix}: "
             f"stderr={proc.stderr[:300]!r} stdout={proc.stdout[:300]!r}"
         )
+
     try:
         wrapper = json.loads(proc.stdout)
     except json.JSONDecodeError as e:

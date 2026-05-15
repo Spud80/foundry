@@ -68,6 +68,7 @@ tillegg `OBSIDIAN_VAULT_ROOT`:
 | `OBSIDIAN_VAULT_ROOT` | run.sh (default `${HOME}/vault/My Vault`) | Ja på foundry CT | Base-sti for `1.Inbox/`-glob |
 | `FOUNDRY_NOTIFY_SH` | run.sh (default `${REPO_ROOT}/_shared/notify.sh`) | Nei | Lar classify.py eskalere transient/recovery-warnings til Telegram uten exit |
 | `FALLBACK_CLAUDE_TIMEOUT` | run.sh (default `20m`) | Nei | Per-fil `timeout`-verdi for `claude -p` |
+| `FALLBACK_RETRY_MAX_ATTEMPTS` | classify.py (default `3`) | Nei | Maks antall forsøk på `claude -p` ved transient-feil (529/503/rate-limit). Sett 1 for å disable retry. |
 
 classify.py må IKKE kreve andre env-vars uten å oppdatere denne kontrakten.
 
@@ -218,8 +219,10 @@ resultat (B blir A → ai-capture; C blir A → re-mutate → rename; D forblir 
 |----------|-----------------|
 | `1.Inbox/`-glob returnerer 0 filer | exit 0 silent (forventet steady-state når PLAN-3X Phase 600 ikke har skrevet pending-filer) |
 | Frontmatter-YAML korrupt på enkelt-fil | Logg ERROR + notify Telegram + skip fil + akkumuler exit 1 (transient) |
-| `claude -p` returnerer ikke-parsbar JSON | Logg ERROR + notify Telegram + skip fil + akkumuler exit 1 |
-| `claude -p` per-fil-timeout (20m) | Logg ERROR + notify Telegram "TIMEOUT" + skip fil + akkumuler exit 1 |
+| `claude -p` upstream transient (529 Overloaded, 503, rate-limit) | In-process retry opp til `FALLBACK_RETRY_MAX_ATTEMPTS` (default 3) med eksponentiell backoff (60s, 180s); ved suksess: log som vanlig classify; ved uttømte forsøk: behandles som transient (logg ERROR + notify "transient exhausted" + skip fil + akkumuler exit 1) |
+| `claude -p` returnerer ikke-parsbar JSON | Logg ERROR + notify Telegram + skip fil + akkumuler exit 1 (ingen retry; symptom på prompt-issue, ikke API-overload) |
+| `claude -p` per-fil-timeout (20m) | Logg ERROR + notify Telegram "TIMEOUT" + skip fil + akkumuler exit 1 (ingen retry; timeout signaliserer langvarig blokk) |
+| `claude -p` non-transient exit (parse-error, ugyldig arg) | Logg ERROR + notify Telegram + skip fil + akkumuler exit 1 (fail fast, ingen retry) |
 | `system-prompt.md` mangler | Hard fail: notify Telegram `(FATAL)`, exit 2 |
 | `OBSIDIAN_VAULT_ROOT` ikke satt eller path eksisterer ikke | Hard fail: notify Telegram `(FATAL)`, exit 2 |
 | Manglende hard-required-felt ETTER claude -p (LLM ga ikke nok info) | Logg WARNING; fila beholdes som `pending-foundry-*.md` med `foundry_pending: true` for retry neste cron; akkumuler exit 1 |
@@ -227,6 +230,8 @@ resultat (B blir A → ai-capture; C blir A → re-mutate → rename; D forblir 
 | Rename-IO-feil (etter vellykket mutate) | Recovery-scan ved neste run identifiserer som tilstand B og fullfører rename; logg WARNING; akkumuler exit 1 |
 
 Aggregert exit-kode-logikk: exit 2 (fatal) > exit 1 (any transient) > exit 0 (clean).
+
+**Transient-retry-policy:** `claude -p`-exit med stderr/stdout som matcher mønster (`529`, `overloaded`, `503`, `502`, `rate_limit`, `rate limit`, `too many requests`) retries in-process opp til `FALLBACK_RETRY_MAX_ATTEMPTS` forsøk (default 3) med backoff fra `RETRY_BACKOFF_SECONDS` (default `[60, 180]`). Worst-case tilleggslatens per fil = sum av backoffs (4 min) + N retries × per-kall-tid. Per-fil-timeout (`FALLBACK_CLAUDE_TIMEOUT_SECONDS`, default 1200s/20m) gjelder per subprocess-kall, ikke aggregert over retries - 3 retries innenfor backoff-vinduet og 1200s claude-call-tid hver kan teoretisk bruke opptil ~64 min på worst-case-fil, men praktisk er hver retry-kall < 30s.
 
 ## Endringskontroll
 
