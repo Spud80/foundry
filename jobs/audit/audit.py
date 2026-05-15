@@ -431,6 +431,22 @@ def check_wikilinks(
 
 # ---------- Check 4: Sampling-classification (LLM) ----------
 
+def _strip_md_json_fence(text: str) -> str:
+    """Strip Markdown ```json ... ``` wrapper that LLMs sometimes add to JSON
+    output despite the prompt asking for raw JSON. No-op when no fence detected.
+    """
+    s = text.strip()
+    if s.startswith("```json"):
+        s = s[len("```json"):].lstrip()
+    elif s.startswith("```"):
+        s = s[len("```"):].lstrip()
+    else:
+        return text
+    if s.endswith("```"):
+        s = s[:-len("```")].rstrip()
+    return s
+
+
 def call_claude_classify(body: str) -> dict:
     """Invoke `claude -p` with audit system-prompt; return parsed {capture, intent, topics}.
 
@@ -467,6 +483,7 @@ def call_claude_classify(body: str) -> dict:
         result_text = wrapper["result"]
     else:
         result_text = proc.stdout
+    result_text = _strip_md_json_fence(result_text)
     try:
         return json.loads(result_text)
     except json.JSONDecodeError as e:

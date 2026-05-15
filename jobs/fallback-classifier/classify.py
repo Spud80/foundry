@@ -170,6 +170,44 @@ def classify_state(fm: dict) -> str:
 
 # ---------- Claude subprocess ----------
 
+def _strip_md_json_fence(text: str) -> str:
+    """Strip Markdown ```json ... ``` wrapper that LLMs sometimes add to JSON
+    output despite the prompt asking for raw JSON. No-op when no fence detected.
+    """
+    s = text.strip()
+    if s.startswith("```json"):
+        s = s[len("```json"):].lstrip()
+    elif s.startswith("```"):
+        s = s[len("```"):].lstrip()
+    else:
+        return text
+    if s.endswith("```"):
+        s = s[:-len("```")].rstrip()
+    return s
+
+
+_ENUM_FIELDS = {
+    "capture": CAPTURE_ENUM,
+    "intent": INTENT_ENUM,
+    "status": STATUS_ENUM,
+}
+
+
+def _is_invalid_enum_value(field: str, value) -> bool:
+    """True when the existing field value fails enum validation.
+
+    intent=None and status=None are valid (None is in INTENT_ENUM; status has
+    conditional-required semantics handled elsewhere). Only invalid when the
+    value is a non-empty value that does not match the allowed set.
+    """
+    enum_set = _ENUM_FIELDS.get(field)
+    if enum_set is None:
+        return False
+    if value in (None, "", []):
+        return False  # empty handled by missing-only merge path
+    return value not in enum_set
+
+
 def call_claude(body: str, current_fm: dict, current_date: str) -> dict:
     """Invoke `claude -p` headless with --json-schema validation. Return parsed dict.
 
@@ -225,6 +263,7 @@ def call_claude(body: str, current_fm: dict, current_date: str) -> dict:
         result_text = wrapper["result"]
     else:
         result_text = proc.stdout
+    result_text = _strip_md_json_fence(result_text)
     try:
         return json.loads(result_text)
     except json.JSONDecodeError as e:
@@ -254,19 +293,27 @@ def validate_llm_output(llm: dict) -> list[str]:
 
 
 def merge_classification(current_fm: dict, llm_output: dict) -> dict:
-    """Merge LLM output into current frontmatter (missing-only semantics).
-    Returns the merged frontmatter (new dict, does not mutate input).
+    """Merge LLM output into current frontmatter.
+
+    Merge-policy: take LLM value when current is missing/empty OR when the
+    current value fails enum validation (capture/intent/status). Valid
+    existing values are preserved. pre_classified is always overwritten to
+    'full' below.
+
+    The enum-overwrite path closes the case where save.py wrote an entry
+    with an invalid enum (e.g. ``intent: 'todo'``); without it, the invalid
+    value survived through fallback and inbox-handler re-routed back to
+    pending-foundry indefinitely.
     """
     merged = dict(current_fm)
 
-    # Fields LLM is allowed to set; only fill if missing or empty in current_fm.
-    # Exception: pre_classified is always overwritten to 'full' below.
     fillable = ["title", "capture", "intent", "status", "due", "topics",
                 "creator", "year", "genre", "attribution"]
     for k in fillable:
         if k not in llm_output:
             continue
-        if merged.get(k) in (None, "", []):
+        current_val = merged.get(k)
+        if current_val in (None, "", []) or _is_invalid_enum_value(k, current_val):
             merged[k] = llm_output[k]
 
     # Always set/overwrite:
