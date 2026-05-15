@@ -73,6 +73,12 @@ if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
   exit 2
 fi
 
+# Eksporter notify-sti slik at extract.py.notify() kan eskalere graceful-degrade
+# tilstander (status=missing fra load_aliases) til Telegram via _shared/notify.sh.
+# Uten denne: kun AliasesError (exit 2) eskalerer via run.sh catch-all; missing
+# aliases.yaml er stille i Telegram (Runde 5 plan-review finding).
+export FOUNDRY_NOTIFY_SH="${FOUNDRY_NOTIFY_SH:-${REPO_ROOT}/_shared/notify.sh}"
+
 # === Steg 3: flock --nonblock pa deploy-lock ===
 exec 9>"$LOCK_FILE"
 if ! flock --nonblock 9; then
