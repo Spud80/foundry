@@ -371,11 +371,20 @@ def check_schema(entries: list[Path], vault_root: Path) -> dict:
                         "detail": f"pre_classified={pre!r} but missing baseline field {k!r}",
                     })
             if fm.get("source") == "ai-session" and "source_session" not in fm:
+                # Include session_id_source context if present - helps operator
+                # distinguish "missing because emitter has bug" from "missing
+                # because fallback-uuid path was used but emitter forgot to
+                # write the placeholder wikilink" (latter is a clear emitter-bug).
+                sid_src = fm.get("session_id_source")
+                hint = (
+                    f" (note: session_id_source={sid_src!r} present)"
+                    if sid_src else ""
+                )
                 violations.append({
                     "path": rel,
                     "type": "missing_baseline",
                     "severity": "hoy",
-                    "detail": "source=ai-session but source_session missing",
+                    "detail": f"source=ai-session but source_session missing{hint}",
                 })
 
         unknown = set(fm.keys()) - KNOWN_FIELDS
@@ -558,6 +567,28 @@ def topics_jaccard(a: set, b: set) -> float:
     return len(a & b) / len(union)
 
 
+def topics_agree(stored: set, audit: set) -> bool:
+    """Hybrid topic-set agreement model.
+
+    Short topic-lists (<=2 on either side) suffer outsized Jaccard penalty for
+    single swaps (e.g. [a,b] vs [a,c] -> Jaccard 0.33, below 0.5 threshold).
+    For short lists, use absolute-overlap: agree if >=1 topic in common (both
+    non-empty) OR both empty. Longer lists use the Jaccard threshold.
+
+    Rationale: short topic-lists naturally have higher per-element variance
+    impact. LLM re-classification picking 1-of-2 different topics doesn't
+    indicate classifier-drift, just topic-vocabulary granularity choice.
+    """
+    if not stored and not audit:
+        return True
+    short = max(len(stored), len(audit)) <= 2
+    if short:
+        # Both non-empty: at least one common topic.
+        # One empty + one non-empty: no overlap possible -> disagree.
+        return bool(stored & audit)
+    return topics_jaccard(stored, audit) >= TOPICS_JACCARD_MATCH
+
+
 def check_sampling(notes: list[Path], vault_root: Path, today: dt.date, skip_llm: bool = False) -> dict:
     """Sample 10% of fresh ai-session entries (last 7 days); independent re-classify
     via claude -p; report per-axis divergence with topics demoted to informational.
@@ -649,7 +680,7 @@ def check_sampling(notes: list[Path], vault_root: Path, today: dt.date, skip_llm
             intent_dis += 1
             diff_detail["intent"] = {"stored": stored_intent, "audit": llm_intent}
         jaccard = topics_jaccard(stored_topics, llm_topics)
-        if jaccard < TOPICS_JACCARD_MATCH:
+        if not topics_agree(stored_topics, llm_topics):
             topics_dis += 1
             diff_detail["topics"] = {
                 "stored": sorted(stored_topics),
@@ -657,6 +688,7 @@ def check_sampling(notes: list[Path], vault_root: Path, today: dt.date, skip_llm
                 "added": sorted(llm_topics - stored_topics),
                 "removed": sorted(stored_topics - llm_topics),
                 "jaccard": round(jaccard, 4),
+                "model": "short-list-overlap" if max(len(stored_topics), len(llm_topics)) <= 2 else "jaccard",
             }
         if diff_detail:
             structural_points = ("capture" in diff_detail) + ("intent" in diff_detail)
@@ -819,7 +851,13 @@ def check_missing_required(entries: list[Path], vault_root: Path) -> dict:
                 gaps.append({
                     "path": rel,
                     "type": "missing_source_session",
-                    "detail": "source=ai-session but source_session is null",
+                    "detail": (
+                        f"source=ai-session but source_session is null"
+                        + (
+                            f" (note: session_id_source={fm.get('session_id_source')!r} present)"
+                            if fm.get("session_id_source") else ""
+                        )
+                    ),
                 })
             elif not WIKILINK_RE.search(str(ss)):
                 gaps.append({
