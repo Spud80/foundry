@@ -139,6 +139,13 @@ case "$extract_status" in
     notify "(FATAL) exit 2 - manual intervention required. See logs."
     log "FATAL: extract.py exit 2"
     ;;
+  3)
+    # Preflight-degraded: manifest sha256 mismatch (typically post-restore).
+    # Non-transient: retrying tomorrow will fail identically until reconcile.
+    # Operator must run reconcile-manifest.py --apply to fix.
+    notify "preflight-degraded (exit 3) - manifest sha256 mismatch. Run reconcile-manifest.py --apply on vault to fix. See logs."
+    log "preflight-degraded: extract.py exit 3 (manifest sha256 mismatch)"
+    ;;
   *)
     notify "(FATAL) unexpected exit ${extract_status}. See logs."
     log "FATAL: extract.py exit ${extract_status}"

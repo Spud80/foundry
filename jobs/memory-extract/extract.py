@@ -334,6 +334,16 @@ class PreflightError(Exception):
     """Raised for transient pre-flight failures. Caller exits 0 (retry next cron)."""
 
 
+class PreflightShaMismatchError(PreflightError):
+    """Raised when manifest sha256 != on-disk sha256.
+
+    Distinct from PreflightError because it is NOT transient - the manifest is
+    stale (typically after backup-restore or external file modification) and
+    will not self-heal by retrying. Caller exits 3 to escalate via run.sh
+    Telegram notify, prompting manual `reconcile-manifest.py --apply`.
+    """
+
+
 def verify_manifests(raw_root: Path) -> list[Path]:
     """Verify every non-empty date-dir has a valid manifest. Return verified date-dirs."""
     if not raw_root.is_dir():
@@ -368,9 +378,10 @@ def verify_manifests(raw_root: Path) -> list[Path]:
                 )
             actual = sha256_of(local)
             if actual != expected_sha:
-                raise PreflightError(
-                    f"capture sync incomplete: sha256 mismatch on {rel_path} "
-                    f"(manifest={expected_sha[:8]}.., actual={actual[:8]}..)"
+                raise PreflightShaMismatchError(
+                    f"sha256 mismatch on {rel_path} "
+                    f"(manifest={expected_sha[:8]}.., actual={actual[:8]}..). "
+                    f"Run reconcile-manifest.py --apply to fix."
                 )
         verified.append(date_dir)
     return verified
@@ -486,6 +497,28 @@ def _is_oversize_error(stdout: str) -> bool:
     return isinstance(result, str) and any(m in result for m in OVERSIZED_ERROR_MARKERS)
 
 
+def _strip_md_json_fence(text: str) -> str:
+    """Strip Markdown ```json ... ``` wrapper that LLMs sometimes add to JSON
+    output despite the prompt asking for raw JSON. No-op when no fence detected.
+
+    Why: ``claude -p --output-format json`` without ``--json-schema`` returns the
+    LLM's literal output in ``wrapper["result"]``. Some prompts elicit a
+    Markdown code-fence wrap (``\\`\\`\\`json\\n{...}\\n\\`\\`\\``); ``json.loads``
+    then fails with "Expecting value: line 1 column 1". Stripping the fence
+    before parsing keeps the call resilient to that LLM behaviour.
+    """
+    s = text.strip()
+    if s.startswith("```json"):
+        s = s[len("```json"):].lstrip()
+    elif s.startswith("```"):
+        s = s[len("```"):].lstrip()
+    else:
+        return text
+    if s.endswith("```"):
+        s = s[:-len("```")].rstrip()
+    return s
+
+
 def call_claude(
     raw_text: str,
     *,
@@ -562,6 +595,7 @@ def call_claude(
         result_text = wrapper["result"]
     else:
         result_text = proc.stdout  # fall back
+    result_text = _strip_md_json_fence(result_text)
     try:
         return json.loads(result_text)
     except json.JSONDecodeError as e:
@@ -786,6 +820,11 @@ def main(argv: list[str] | None = None) -> int:
     # ----- Pre-flight 1: manifest -----
     try:
         verified = verify_manifests(raw_root)
+    except PreflightShaMismatchError as e:
+        # Non-transient: manifest is stale (typically post-restore). Escalate to
+        # run.sh via exit 3 so Telegram notifies and operator runs reconcile.
+        print(f"preflight (manifest): {e}", file=sys.stderr)
+        return 3
     except PreflightError as e:
         print(f"preflight (manifest): {e}", file=sys.stderr)
         return 0  # transient, retry next cron

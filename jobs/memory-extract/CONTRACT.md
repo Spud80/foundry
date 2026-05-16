@@ -48,13 +48,21 @@ run.sh propagerer extract.py sin exit-kode:
 | 0 | OK - alle sesjoner prosessert, ingen pending, ELLER transient pre-flight-fail (manifest sync incomplete, Syncthing needFiles>0) | Logg, exit 0 stille; cron retrier neste dag |
 | 1 | Per-session prosessering-feil (LLM-feil, parse-feil); state preservert, neste cron retrier de feilede | Notify Telegram "transient", exit 1 |
 | 2 | Hard fatal (state-fil korrupt uten --force-flag, manglende system-prompt-file, mismatch state-vs-extracted) | Notify Telegram `(FATAL)`, exit 2; krever manuell intervensjon |
+| 3 | Preflight-degraded: manifest sha256 mismatch (typically post-backup-restore - manifestet er stale ift on-disk-data, retry vil feile identisk) | Notify Telegram "preflight-degraded", exit 3; krever `reconcile-manifest.py --apply` |
 | 124 | Timeout (`timeout 30m` killed extract.py) | Notify "TIMEOUT", behandles som transient |
 | Andre | Behandles som fatal | Notify, exit som-er |
 
-**Designvalg som avviker fra tidligere CONTRACT.md-versjon:** preflight-fail (manifest
-mismatch eller Syncthing incomplete) returnerer **exit 0 silent**, ikke exit 1. Begrunnelse:
-unngår Telegram-spam ved Syncthing-lag (vanlig, transient situasjon). Eksplisitt avvik
-akseptert av foundry-sesjonen 2026-05-08.
+**Designvalg - preflight-fail splittet i to:**
+
+- **Transient preflight-fail** (missing manifest, missing file, Syncthing needFiles>0)
+  returnerer **exit 0 silent**. Begrunnelse: unngår Telegram-spam ved Syncthing-lag
+  (vanlig, transient situasjon - self-heals neste cron-vindu).
+- **Non-transient preflight-fail** (manifest sha256 mismatch) returnerer **exit 3** med
+  Telegram-notify. Begrunnelse: stale manifest etter backup-restore self-healer IKKE -
+  retry feiler identisk hver dag til operator kjorer `reconcile-manifest.py --apply`.
+  Skille innfort 2026-05-16 etter at 2026-05-15-vinduet aborterte stille i 18:30-cron.
+
+Original exit-0-policy aksepterte foundry-sesjonen 2026-05-08; sha-mismatch-split lagt til 2026-05-16.
 
 ### Forventet kjøretid
 
