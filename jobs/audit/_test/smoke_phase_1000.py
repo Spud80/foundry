@@ -252,6 +252,35 @@ def scenario_broken_source_session_kritisk():
     print("  [OK] scenario_broken_source_session_kritisk")
 
 
+def scenario_fallback_uuid_skipped():
+    """ai-session entry with session_id_source=fallback-uuid -> source_session
+    wikilink resolution skipped (synthetic UUID, no raw file expected to exist).
+    See capture-vocabulary.md Pipeline-instrumentation fields + audit-pass-spec.md
+    check 3 fallback-uuid exception."""
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        vault_root, report_dir, state_file = make_vault(tmp)
+        # No raw-session file created; the wikilink intentionally does not resolve.
+        make_entry(
+            vault_root / "2.Resources" / "Notes" / "Annotations" / "headless-save.md",
+            source_session="[[raw/2026-05-13/synthetic-uuid-from-headless]]",
+            dedup_hash="hash-fallback-uuid",
+            extra={"session_id_source": "fallback-uuid"},
+        )
+        rc = run_audit(vault_root, report_dir, state_file)
+        assert rc == 0
+        report = (report_dir / f"{dt.date.today().isoformat()}.md").read_text(encoding="utf-8")
+        # source_session wikilink-check skipped -> 0 broken, finding does not drive kritisk-tier.
+        assert "broken_source_session: 0" in report, (
+            f"expected fallback-uuid to skip wikilink check:\n{report[:1500]}"
+        )
+        # session_id_source should be recognised as a known field (no schema-violation).
+        assert "unknown field 'session_id_source'" not in report, (
+            f"session_id_source should be in KNOWN_FIELDS:\n{report[:1500]}"
+        )
+    print("  [OK] scenario_fallback_uuid_skipped")
+
+
 def scenario_broken_links_lav():
     """links[] array with broken target -> tier=lav."""
     with tempfile.TemporaryDirectory() as td:
@@ -492,6 +521,7 @@ SCENARIOS = [
     scenario_schema_missing_hard_required,
     scenario_legacy_status_emoji,
     scenario_broken_source_session_kritisk,
+    scenario_fallback_uuid_skipped,
     scenario_broken_links_lav,
     scenario_forbidden_status_emoji_check5,
     scenario_forbidden_growth_emoji_check5,

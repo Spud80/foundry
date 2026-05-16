@@ -276,6 +276,14 @@ KNOWN_FIELDS = {
     "processing_state", "pre_classified", "tags", "topics", "snooze_until",
     "notify", "links", "related", "plan", "action", "creator", "year", "genre",
     "attribution", "schema_version", "foundry_pending",
+    # Pipeline-emitted optional fields (capture-vocabulary.md schema_version 1):
+    # - session_id_source: marker from /save skill when $CLAUDE_SESSION_ID
+    #   env-var was missing and a synthetic UUID was generated as fallback.
+    #   Audit check 3 skips source_session wikilink-resolution for these.
+    # - foundry_pending_reason: inbox-handler routing rationale when an entry
+    #   was renamed to pending-foundry-* (e.g. "missing intent",
+    #   "pre_classified='partial' (only 'full' is direct-routable)").
+    "session_id_source", "foundry_pending_reason",
 }
 
 
@@ -387,23 +395,31 @@ def check_wikilinks(
         source = fm.get("source")
         source_session = fm.get("source_session")
         if source_session:
-            target = str(source_session).strip()
-            m = WIKILINK_RE.match(target) or WIKILINK_RE.search(target)
-            inner = m.group(1) if m else target
-            raw_m = SOURCE_SESSION_RAW_RE.match(inner)
-            if raw_m:
-                key = (raw_m.group(1), raw_m.group(2))
-                exists = key in raw_index
-            else:
-                exists = resolve_wikilink(inner, link_index, vault_root)
-            if not exists:
-                severity = "kritisk" if source == "ai-session" else "hoy"
-                broken.append({
-                    "path": rel,
-                    "field": "source_session",
-                    "target": inner,
-                    "severity": severity,
-                })
+            # Skip source_session wikilink resolution when session_id_source is
+            # fallback-uuid: the /save skill generates a synthetic UUID when
+            # $CLAUDE_SESSION_ID was not exposed (headless invocations), so no
+            # raw file is expected to exist at the wikilink target by design.
+            # Field is informational; flagging would be noise. See
+            # capture-vocabulary.md "session_id_source" for the convention.
+            sid_source = str(fm.get("session_id_source", "")).strip()
+            if sid_source != "fallback-uuid":
+                target = str(source_session).strip()
+                m = WIKILINK_RE.match(target) or WIKILINK_RE.search(target)
+                inner = m.group(1) if m else target
+                raw_m = SOURCE_SESSION_RAW_RE.match(inner)
+                if raw_m:
+                    key = (raw_m.group(1), raw_m.group(2))
+                    exists = key in raw_index
+                else:
+                    exists = resolve_wikilink(inner, link_index, vault_root)
+                if not exists:
+                    severity = "kritisk" if source == "ai-session" else "hoy"
+                    broken.append({
+                        "path": rel,
+                        "field": "source_session",
+                        "target": inner,
+                        "severity": severity,
+                    })
 
         for field in ("links", "related"):
             val = fm.get(field)
