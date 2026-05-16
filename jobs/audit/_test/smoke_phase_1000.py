@@ -281,6 +281,62 @@ def scenario_fallback_uuid_skipped():
     print("  [OK] scenario_fallback_uuid_skipped")
 
 
+def scenario_manual_note_bypass():
+    """Manually-curated notes (no full pipeline-marker signature) must be
+    skipped by checks 2/3/5/6. Simulates typical Books/Quotes/Ideas-folder
+    notes that user creates by hand and don't go through /save-pipeline.
+
+    See audit-pass-spec.md "Pipeline-emitted vs manual notes" - gate is
+    presence of ALL of: dedup_hash, pre_classified, user_id, scope."""
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        vault_root, report_dir, state_file = make_vault(tmp)
+
+        # Write a manual book-note directly (bypassing make_entry which auto-
+        # sets all pipeline-markers). Includes fields a user template might
+        # legitimately add (source, processing_state) but missing the full
+        # pipeline signature (no dedup_hash, no pre_classified, no user_id,
+        # no scope). Also has fields outside KNOWN_FIELDS (author, published)
+        # that would normally trigger unknown_field findings.
+        book_path = vault_root / "2.Resources" / "Notes" / "Books" / "Manual Book.md"
+        book_path.parent.mkdir(parents=True, exist_ok=True)
+        book_path.write_text(
+            "---\n"
+            "title: Manual Book\n"
+            "source: web\n"
+            "processing_state: completed\n"
+            "author: Some Author\n"
+            "published: 2020\n"
+            "tags:\n"
+            "  - 📥\n"
+            "  - 📖\n"
+            "---\n"
+            "Body text.\n",
+            encoding="utf-8",
+        )
+
+        rc = run_audit(vault_root, report_dir, state_file)
+        assert rc == 0
+        report = (report_dir / f"{dt.date.today().isoformat()}.md").read_text(encoding="utf-8")
+
+        # Check 2: no schema-violations on manual note (no missing_baseline,
+        # no unknown_field for author/published).
+        assert "schema_violations: 0" in report, (
+            f"manual note should not be schema-audited:\n{report[:2000]}"
+        )
+        # Check 3: no broken_links (manual notes have no source_session).
+        assert "broken_source_session: 0" in report
+        # Check 5: no tag violations (📖 is fine on manual Book, missing 💭 is fine).
+        assert "tag_violations: 0" in report, (
+            f"manual note should not get tag-violations:\n{report[:2000]}"
+        )
+        # Overall tier should be silent (no findings drive any severity).
+        assert "tier: silent" in report, (
+            f"manual note alone should produce silent tier:\n{report[:1500]}"
+        )
+    print("  [OK] scenario_manual_note_bypass")
+
+
 def scenario_broken_links_lav():
     """links[] array with broken target -> tier=lav."""
     with tempfile.TemporaryDirectory() as td:
@@ -381,6 +437,67 @@ def scenario_idempotency_rerun():
         # Verify single report file (no append).
         assert len(list(report_dir.glob("*.md"))) == 1
     print("  [OK] scenario_idempotency_rerun")
+
+
+def scenario_sampling_topics_demoted():
+    """Topics-only divergence (Jaccard < 0.5) must NOT drive any severity tier.
+    Structural axes (capture+intent) match -> structural_divergence_rate=0,
+    topics_divergence_rate>0 -> tier=silent (topics is informational only)."""
+    # We don't actually invoke claude -p here; we unit-test the rate-aggregation
+    # logic by constructing a synthetic sampling-result and feeding it through
+    # the tier-aggregation directly.
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from audit import aggregate_tier  # noqa
+    findings = {
+        "schema": {"by_severity": {"kritisk": 0, "hoy": 0, "lav": 0}},
+        "wikilinks": {"by_severity": {"kritisk": 0, "hoy": 0, "lav": 0}},
+        "tags": {"by_severity": {"hoy": 0, "lav": 0}},
+        "dedup": {"count": 0},
+        "missing_required": {"count": 0},
+        # Synthetic: 3/5 topics disagreements, 0/5 capture/intent disagreements.
+        "sampling": {
+            "skipped": False,
+            "structural_divergence_rate": 0.0,
+            "topics_divergence_rate": 0.6,
+            "structural_above_threshold": False,
+            "above_threshold": False,  # backwards-compat alias
+            "divergence_rate": 0.0,
+        },
+    }
+    tier = aggregate_tier(findings)
+    assert tier == "silent", (
+        f"topics-only divergence should NOT drive tier; got {tier!r}"
+    )
+    print("  [OK] scenario_sampling_topics_demoted")
+
+
+def scenario_sampling_structural_drives_tier():
+    """capture+intent disagreement on 2/5 samples -> structural rate 4/10=0.40
+    -> above 0.20 threshold -> hoy tier."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from audit import aggregate_tier  # noqa
+    findings = {
+        "schema": {"by_severity": {"kritisk": 0, "hoy": 0, "lav": 0}},
+        "wikilinks": {"by_severity": {"kritisk": 0, "hoy": 0, "lav": 0}},
+        "tags": {"by_severity": {"hoy": 0, "lav": 0}},
+        "dedup": {"count": 0},
+        "missing_required": {"count": 0},
+        "sampling": {
+            "skipped": False,
+            "structural_divergence_rate": 0.40,
+            "topics_divergence_rate": 0.0,
+            "structural_above_threshold": True,
+            "above_threshold": True,  # backwards-compat alias
+            "divergence_rate": 0.40,
+        },
+    }
+    tier = aggregate_tier(findings)
+    assert tier == "hoy", (
+        f"structural divergence above threshold should drive hoy; got {tier!r}"
+    )
+    print("  [OK] scenario_sampling_structural_drives_tier")
 
 
 def scenario_sampling_skipped():
@@ -522,12 +639,15 @@ SCENARIOS = [
     scenario_legacy_status_emoji,
     scenario_broken_source_session_kritisk,
     scenario_fallback_uuid_skipped,
+    scenario_manual_note_bypass,
     scenario_broken_links_lav,
     scenario_forbidden_status_emoji_check5,
     scenario_forbidden_growth_emoji_check5,
     scenario_missing_creator,
     scenario_idempotency_rerun,
     scenario_sampling_skipped,
+    scenario_sampling_topics_demoted,
+    scenario_sampling_structural_drives_tier,
     scenario_tier_aggregation_kritisk,
     scenario_atomic_write_tempfile,
     scenario_heartbeat_consecutive_counters,

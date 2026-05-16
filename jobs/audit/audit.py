@@ -50,6 +50,31 @@ HARD_REQUIRED_FULL = [
 ]
 MINIMUM_BASELINE = ["title", "created", "source", "pre_classified"]
 
+# Multi-field signature for pipeline-emitted entries. All four fields are
+# hard-required by capture-vocabulary.md schema_version 1 for ANY thought-
+# pipeline emitter (/save, mobile, web, foundry-fallback). Manual user
+# notes (Books, Ideas, Quotes, Reference, etc.) lack at least one of these
+# even when they reuse overlapping field-names from user templates.
+#
+# Multi-field gate (vs single-field) is robust against partial reuse: any
+# single field could collide with a future pipeline that emits it with
+# different semantics (e.g. vault-sentinel could add dedup_hash for
+# URL-hashing). Requiring the full schema-signature avoids false-positives.
+#
+# See audit-pass-spec.md "Pipeline-emitted vs manual notes" for rationale.
+PIPELINE_MARKERS = ("dedup_hash", "pre_classified", "user_id", "scope")
+
+
+def is_pipeline_entry(fm: dict) -> bool:
+    """True iff frontmatter carries the full pipeline schema-signature.
+
+    Audit checks 2 (schema), 3 (wikilinks), 5 (tags), 6 (missing-required)
+    enforce pipeline-schema and apply ONLY to pipeline-emitted entries.
+    Checks 1 (dedup) and 4 (sampling) are inherently pipeline-scoped via
+    their own filters (dedup_hash presence; source=ai-session).
+    """
+    return all(k in fm for k in PIPELINE_MARKERS)
+
 FORBIDDEN_GROWTH_EMOJI = {"📝", "🌱", "🌿", "🌲"}
 FORBIDDEN_STATUS_EMOJI = {"🟥", "🟧", "🟨", "🟪", "🟩"}
 REQUIRED_TAGS = ["📥", "💭"]
@@ -60,7 +85,14 @@ CLAUDE_HARD_CAP = 50  # per audit-pass-spec.md "Resource budget"
 SAMPLING_RATE = 0.10
 SAMPLING_MIN_FRESH = 5
 SAMPLING_FRESH_DAYS = 7
+# Structural divergence threshold: applies to capture+intent disagreement only.
+# Topics-divergence is reported as informational (sevarity-neutral) since LLM
+# free-form topic-tag selection has high inherent variance even at temperature=0.
+# See audit-pass-spec.md "Sampling-classification: structural vs topics axes".
 DIVERGENCE_THRESHOLD = 0.20
+# Topics-Jaccard threshold: stored.topics vs audit.topics count as "agree" when
+# |stored ∩ audit| / |stored ∪ audit| >= this. Empty-empty is perfect (1.0).
+TOPICS_JACCARD_MATCH = 0.5
 
 FM_RE = re.compile(r"^---\n(.*?)\n---\n(.*)$", re.DOTALL)
 WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
@@ -303,6 +335,12 @@ def check_schema(entries: list[Path], vault_root: Path) -> dict:
             })
             continue
 
+        # Manual notes (missing one or more pipeline-markers) follow user's
+        # own conventions and are not audited against pipeline-schema.
+        # parse_error already caught above applies to all files.
+        if not is_pipeline_entry(fm):
+            continue
+
         schema_ver = fm.get("schema_version", 1)
         if isinstance(schema_ver, int) and schema_ver > RUNNER_SCHEMA_VERSION:
             violations.append({
@@ -389,6 +427,10 @@ def check_wikilinks(
     for p in entries:
         fm, _ = load_frontmatter(p)
         if fm is None:
+            continue
+        # Manual notes don't carry source_session/links/related from pipeline
+        # conventions; skip wikilink-validation for them.
+        if not is_pipeline_entry(fm):
             continue
         rel = str(p.relative_to(vault_root))
 
@@ -506,9 +548,28 @@ def call_claude_classify(body: str) -> dict:
         raise RuntimeError(f"audit response not JSON: {e}; first-200={result_text[:200]}")
 
 
+def topics_jaccard(a: set, b: set) -> float:
+    """Jaccard similarity for topic-sets. Empty-empty is perfect match (1.0)."""
+    if not a and not b:
+        return 1.0
+    union = a | b
+    if not union:
+        return 1.0
+    return len(a & b) / len(union)
+
+
 def check_sampling(notes: list[Path], vault_root: Path, today: dt.date, skip_llm: bool = False) -> dict:
     """Sample 10% of fresh ai-session entries (last 7 days); independent re-classify
-    via claude -p; aggregate divergence-rate."""
+    via claude -p; report per-axis divergence with topics demoted to informational.
+
+    Tier-driver is STRUCTURAL divergence (capture + intent), which represents
+    actual classifier-drift on the schema-enforced enum axes. Topics divergence
+    is reported separately as informational since LLM free-form topic-tag
+    selection has high inherent variance even at temperature=0 (different
+    runs pick rimelig-but-different subsets of the vocabulary). Topics use
+    Jaccard similarity with TOPICS_JACCARD_MATCH threshold rather than
+    exact-set-equality.
+    """
     fresh: list[tuple[Path, dict, str]] = []
     cutoff = today - dt.timedelta(days=SAMPLING_FRESH_DAYS)
     for p in notes:
@@ -537,6 +598,12 @@ def check_sampling(notes: list[Path], vault_root: Path, today: dt.date, skip_llm
             "reason": f"only {len(fresh)} fresh ai-session entries (< {SAMPLING_MIN_FRESH})",
             "fresh_count": len(fresh),
             "sample_size": 0,
+            "structural_divergence_rate": None,
+            "topics_divergence_rate": None,
+            "capture_disagreements": 0,
+            "intent_disagreements": 0,
+            "topics_disagreements": 0,
+            # Backwards-compat alias: equals structural_divergence_rate when set.
             "divergence_rate": None,
             "divergences": [],
         }
@@ -547,7 +614,10 @@ def check_sampling(notes: list[Path], vault_root: Path, today: dt.date, skip_llm
     sample = fresh[:sample_size]
 
     divergences: list[dict] = []
-    total_points = 0
+    capture_dis = 0
+    intent_dis = 0
+    topics_dis = 0
+    samples_classified = 0
     for p, fm, body in sample:
         rel = str(p.relative_to(vault_root))
         stored_capture = fm.get("capture")
@@ -566,39 +636,57 @@ def check_sampling(notes: list[Path], vault_root: Path, today: dt.date, skip_llm
             log(f"  sample claude-error: {p.name}: {e}")
             continue
 
+        samples_classified += 1
         llm_capture = llm.get("capture")
         llm_intent = llm.get("intent")
         llm_topics = set(llm.get("topics") or [])
 
-        points = 0
-        diff_detail = {}
+        diff_detail: dict = {}
         if llm_capture != stored_capture:
-            points += 1
+            capture_dis += 1
             diff_detail["capture"] = {"stored": stored_capture, "audit": llm_capture}
         if llm_intent != stored_intent:
-            points += 1
+            intent_dis += 1
             diff_detail["intent"] = {"stored": stored_intent, "audit": llm_intent}
-        if llm_topics != stored_topics:
-            points += 1
+        jaccard = topics_jaccard(stored_topics, llm_topics)
+        if jaccard < TOPICS_JACCARD_MATCH:
+            topics_dis += 1
             diff_detail["topics"] = {
                 "stored": sorted(stored_topics),
                 "audit": sorted(llm_topics),
                 "added": sorted(llm_topics - stored_topics),
                 "removed": sorted(stored_topics - llm_topics),
+                "jaccard": round(jaccard, 4),
             }
-        if points > 0:
-            divergences.append({"path": rel, "points": points, "diff": diff_detail})
-        total_points += points
+        if diff_detail:
+            structural_points = ("capture" in diff_detail) + ("intent" in diff_detail)
+            divergences.append({
+                "path": rel,
+                "structural_points": structural_points,
+                "topics_disagrees": "topics" in diff_detail,
+                "diff": diff_detail,
+            })
 
-    max_points = sample_size * 3
-    divergence_rate = total_points / max_points if max_points > 0 else 0.0
+    # Structural rate excludes topics: only capture + intent count toward tier.
+    structural_denom = samples_classified * 2 if samples_classified > 0 else 0
+    structural_rate = (capture_dis + intent_dis) / structural_denom if structural_denom > 0 else 0.0
+    topics_rate = topics_dis / samples_classified if samples_classified > 0 else 0.0
     return {
         "skipped": False,
         "fresh_count": len(fresh),
         "sample_size": sample_size,
-        "divergence_rate": divergence_rate,
+        "samples_classified": samples_classified,
+        "structural_divergence_rate": structural_rate,
+        "topics_divergence_rate": topics_rate,
+        "capture_disagreements": capture_dis,
+        "intent_disagreements": intent_dis,
+        "topics_disagreements": topics_dis,
+        # Backwards-compat alias for frontmatter / external consumers.
+        "divergence_rate": structural_rate,
+        "structural_above_threshold": structural_rate > DIVERGENCE_THRESHOLD,
+        # Backwards-compat alias - tier-driver is structural-only now.
+        "above_threshold": structural_rate > DIVERGENCE_THRESHOLD,
         "divergences": divergences,
-        "above_threshold": divergence_rate > DIVERGENCE_THRESHOLD,
     }
 
 
@@ -610,6 +698,11 @@ def check_tags(notes: list[Path], vault_root: Path) -> dict:
     for p in notes:
         fm, _ = load_frontmatter(p)
         if fm is None:
+            continue
+        # Manual notes (Books with 📖, Quotes with 📜, etc.) follow user's own
+        # tag conventions; the REQUIRED_TAGS/FORBIDDEN_*_EMOJI rules are
+        # pipeline-specific (thought-pipeline class+type emoji uniformity).
+        if not is_pipeline_entry(fm):
             continue
         rel = str(p.relative_to(vault_root))
         tags = fm.get("tags", [])
@@ -672,6 +765,10 @@ def check_missing_required(entries: list[Path], vault_root: Path) -> dict:
     for p in entries:
         fm, _ = load_frontmatter(p)
         if fm is None:
+            continue
+        # Defensive gate (also caught by pre_classified=full requirement below,
+        # but explicit for clarity and consistency with other checks).
+        if not is_pipeline_entry(fm):
             continue
         if fm.get("pre_classified") != "full":
             continue
@@ -836,6 +933,16 @@ def render_report(
                 if sampling.get("divergence_rate") is not None
                 else None
             ),
+            "classification_structural_divergence_rate": (
+                round(sampling.get("structural_divergence_rate"), 4)
+                if sampling.get("structural_divergence_rate") is not None
+                else None
+            ),
+            "classification_topics_divergence_rate": (
+                round(sampling.get("topics_divergence_rate"), 4)
+                if sampling.get("topics_divergence_rate") is not None
+                else None
+            ),
             "classification_check_skipped": sampling.get("skipped", False),
             "tag_violations": tags.get("count", 0),
             "missing_required_field": missing.get("count", 0),
@@ -897,22 +1004,40 @@ def render_report(
     if sampling.get("skipped"):
         lines.append(f"**Skipped:** {sampling.get('reason', 'insufficient fresh entries')}\n")
     else:
+        n_classified = sampling.get("samples_classified", sampling.get("sample_size", 0))
         lines.append(
             f"**Sample size:** {sampling.get('sample_size', 0)} "
-            f"(of {sampling.get('fresh_count', 0)} fresh ai-session-entries)\n"
+            f"(of {sampling.get('fresh_count', 0)} fresh ai-session-entries; "
+            f"{n_classified} classified by LLM)\n"
         )
-        rate = sampling.get("divergence_rate", 0.0)
-        threshold_state = "above" if sampling.get("above_threshold") else "below"
-        lines.append(f"**Divergence rate:** {rate:.4f} ({threshold_state} {DIVERGENCE_THRESHOLD} threshold)\n")
+        struct_rate = sampling.get("structural_divergence_rate", 0.0) or 0.0
+        topics_rate = sampling.get("topics_divergence_rate", 0.0) or 0.0
+        threshold_state = "above" if sampling.get("structural_above_threshold") else "below"
+        lines.append(
+            f"**Structural divergence (capture+intent):** {struct_rate:.4f} "
+            f"(`{sampling.get('capture_disagreements', 0)}` capture + "
+            f"`{sampling.get('intent_disagreements', 0)}` intent disagreements; "
+            f"{threshold_state} {DIVERGENCE_THRESHOLD} threshold; tier-driver)\n"
+        )
+        lines.append(
+            f"**Topics divergence:** {topics_rate:.4f} "
+            f"(`{sampling.get('topics_disagreements', 0)}` topic-set Jaccard "
+            f"< {TOPICS_JACCARD_MATCH}; informational only, does not drive tier)\n"
+        )
         divs = sampling.get("divergences", [])
         if divs:
             lines.append("\n### Divergent entries\n")
             for d in divs:
-                lines.append(f"- `{d['path']}` ({d['points']} divergence points)\n")
+                struct_pts = d.get("structural_points", 0)
+                topic_flag = "+topics" if d.get("topics_disagrees") else ""
+                lines.append(
+                    f"- `{d['path']}` ({struct_pts} structural{topic_flag})\n"
+                )
                 for field, detail in d["diff"].items():
                     if field == "topics":
                         lines.append(
-                            f"  - topics: added={detail['added']}, removed={detail['removed']}\n"
+                            f"  - topics (jaccard={detail.get('jaccard', 0):.2f}): "
+                            f"added={detail['added']}, removed={detail['removed']}\n"
                         )
                     else:
                         lines.append(f"  - {field}: stored={detail['stored']!r}, audit={detail['audit']!r}\n")
