@@ -337,6 +337,65 @@ def scenario_manual_note_bypass():
     print("  [OK] scenario_manual_note_bypass")
 
 
+def scenario_phase_100_skeleton_audited():
+    """Phase 100 skeleton entries (pre_classified: none) from /save are still
+    pipeline-emitted: they carry all 4 markers (user_id + scope + dedup_hash +
+    pre_classified) per save.py:471-476. Audit gate MUST treat them as pipeline-
+    entries and run checks 2/3/5/6 (which all pass for valid Phase 100 entries
+    because MINIMUM_BASELINE is satisfied).
+
+    Regression coverage: if a future refactor of save.py accidentally drops
+    user_id/scope from the skeleton-path, this test would fail. Conversely if
+    a future audit refactor tightens the gate beyond multi-field, Phase 100
+    entries would silently disappear from audit coverage."""
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        vault_root, report_dir, state_file = make_vault(tmp)
+        make_raw_session(vault_root, "2026-05-13", "phase100-sid")
+
+        # Phase 100 skeleton: classifier did not run. Only minimum-baseline
+        # fields are set + all 4 pipeline-markers. No capture, no intent.
+        # make_entry default has capture="note", intent=None - that matches
+        # what /save Phase 100 writes (skeleton-derived title, no classification).
+        make_entry(
+            vault_root / "1.Inbox" / "ai-capture-phase100-sid-20260513T120000.md",
+            pre_classified="none",
+            source_session="[[raw/2026-05-13/phase100-sid]]",
+            dedup_hash="hash-phase100",
+            processing_state="new",
+        )
+
+        rc = run_audit(vault_root, report_dir, state_file)
+        assert rc == 0
+        report = (report_dir / f"{dt.date.today().isoformat()}.md").read_text(encoding="utf-8")
+
+        # Phase 100 entry is a valid pipeline-citizen - no findings expected.
+        assert "schema_violations: 0" in report, (
+            f"Phase 100 skeleton should pass MINIMUM_BASELINE check:\n{report[:2000]}"
+        )
+        assert "broken_source_session: 0" in report
+        assert "tag_violations: 0" in report
+        assert "missing_required_field: 0" in report
+        assert "tier: silent" in report, (
+            f"Phase 100 alone should produce silent tier:\n{report[:1500]}"
+        )
+
+        # Sanity: also verify the pipeline-gate helper itself classifies
+        # this exact frontmatter as pipeline-emitted (defence-in-depth).
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from audit import is_pipeline_entry, load_frontmatter  # noqa
+        fm, _ = load_frontmatter(
+            vault_root / "1.Inbox" / "ai-capture-phase100-sid-20260513T120000.md"
+        )
+        assert is_pipeline_entry(fm), (
+            "Phase 100 frontmatter must pass is_pipeline_entry gate; "
+            "if this fails, save.py skeleton has stopped writing one of "
+            "{dedup_hash, pre_classified, user_id, scope}"
+        )
+    print("  [OK] scenario_phase_100_skeleton_audited")
+
+
 def scenario_broken_links_lav():
     """links[] array with broken target -> tier=lav."""
     with tempfile.TemporaryDirectory() as td:
@@ -640,6 +699,7 @@ SCENARIOS = [
     scenario_broken_source_session_kritisk,
     scenario_fallback_uuid_skipped,
     scenario_manual_note_bypass,
+    scenario_phase_100_skeleton_audited,
     scenario_broken_links_lav,
     scenario_forbidden_status_emoji_check5,
     scenario_forbidden_growth_emoji_check5,
