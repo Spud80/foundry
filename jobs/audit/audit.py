@@ -589,6 +589,27 @@ def topics_agree(stored: set, audit: set) -> bool:
     return topics_jaccard(stored, audit) >= TOPICS_JACCARD_MATCH
 
 
+def _axis_disagreement(stored, audit):
+    """Compute weighted disagreement for a single classification axis.
+
+    Returns (weight, kind) tuple, or None for agreement.
+
+    Per audit-pass-spec.md §4 asymmetric null-handling:
+    - "abstain" (exactly one side is None): weight 0.5
+    - "drift" (both non-None but different values): weight 1.0
+    - Equal values (including both None): None returned (not a disagreement)
+
+    Rationale: when audit-Claude returns None for intent while capture-Claude
+    committed (or vice versa), the two are not in genuine disagreement on the
+    enum value; one classifier declined to commit. Counting this at full
+    weight inflates structural divergence with confidence-mismatch noise.
+    """
+    if stored == audit:
+        return None
+    is_abstain = (stored is None) != (audit is None)
+    return (0.5, "abstain") if is_abstain else (1.0, "drift")
+
+
 def check_sampling(notes: list[Path], vault_root: Path, today: dt.date, skip_llm: bool = False) -> dict:
     """Sample 10% of fresh ai-session entries (last 7 days); independent re-classify
     via claude -p; report per-axis divergence with topics demoted to informational.
@@ -600,6 +621,11 @@ def check_sampling(notes: list[Path], vault_root: Path, today: dt.date, skip_llm
     runs pick rimelig-but-different subsets of the vocabulary). Topics use
     Jaccard similarity with TOPICS_JACCARD_MATCH threshold rather than
     exact-set-equality.
+
+    Structural disagreements use asymmetric null-handling (see _axis_disagreement):
+    one-side-None counts as 0.5 (abstain), both-non-None-different as 1.0 (drift).
+    capture_disagreements / intent_disagreements are weighted floats; drift/abstain
+    breakdowns are reported as separate integer counters for visibility.
     """
     fresh: list[tuple[Path, dict, str]] = []
     cutoff = today - dt.timedelta(days=SAMPLING_FRESH_DAYS)
@@ -631,8 +657,12 @@ def check_sampling(notes: list[Path], vault_root: Path, today: dt.date, skip_llm
             "sample_size": 0,
             "structural_divergence_rate": None,
             "topics_divergence_rate": None,
-            "capture_disagreements": 0,
-            "intent_disagreements": 0,
+            "capture_disagreements": 0.0,
+            "intent_disagreements": 0.0,
+            "capture_drifts": 0,
+            "capture_abstains": 0,
+            "intent_drifts": 0,
+            "intent_abstains": 0,
             "topics_disagreements": 0,
             # Backwards-compat alias: equals structural_divergence_rate when set.
             "divergence_rate": None,
@@ -645,8 +675,12 @@ def check_sampling(notes: list[Path], vault_root: Path, today: dt.date, skip_llm
     sample = fresh[:sample_size]
 
     divergences: list[dict] = []
-    capture_dis = 0
-    intent_dis = 0
+    capture_dis = 0.0
+    intent_dis = 0.0
+    capture_drifts = 0
+    capture_abstains = 0
+    intent_drifts = 0
+    intent_abstains = 0
     topics_dis = 0
     samples_classified = 0
     for p, fm, body in sample:
@@ -673,12 +707,34 @@ def check_sampling(notes: list[Path], vault_root: Path, today: dt.date, skip_llm
         llm_topics = set(llm.get("topics") or [])
 
         diff_detail: dict = {}
-        if llm_capture != stored_capture:
-            capture_dis += 1
-            diff_detail["capture"] = {"stored": stored_capture, "audit": llm_capture}
-        if llm_intent != stored_intent:
-            intent_dis += 1
-            diff_detail["intent"] = {"stored": stored_intent, "audit": llm_intent}
+        cap_dis = _axis_disagreement(stored_capture, llm_capture)
+        if cap_dis is not None:
+            weight, kind = cap_dis
+            capture_dis += weight
+            if kind == "drift":
+                capture_drifts += 1
+            else:
+                capture_abstains += 1
+            diff_detail["capture"] = {
+                "stored": stored_capture,
+                "audit": llm_capture,
+                "weight": weight,
+                "kind": kind,
+            }
+        int_dis = _axis_disagreement(stored_intent, llm_intent)
+        if int_dis is not None:
+            weight, kind = int_dis
+            intent_dis += weight
+            if kind == "drift":
+                intent_drifts += 1
+            else:
+                intent_abstains += 1
+            diff_detail["intent"] = {
+                "stored": stored_intent,
+                "audit": llm_intent,
+                "weight": weight,
+                "kind": kind,
+            }
         jaccard = topics_jaccard(stored_topics, llm_topics)
         if not topics_agree(stored_topics, llm_topics):
             topics_dis += 1
@@ -691,7 +747,10 @@ def check_sampling(notes: list[Path], vault_root: Path, today: dt.date, skip_llm
                 "model": "short-list-overlap" if max(len(stored_topics), len(llm_topics)) <= 2 else "jaccard",
             }
         if diff_detail:
-            structural_points = ("capture" in diff_detail) + ("intent" in diff_detail)
+            structural_points = (
+                diff_detail.get("capture", {}).get("weight", 0.0)
+                + diff_detail.get("intent", {}).get("weight", 0.0)
+            )
             divergences.append({
                 "path": rel,
                 "structural_points": structural_points,
@@ -712,6 +771,10 @@ def check_sampling(notes: list[Path], vault_root: Path, today: dt.date, skip_llm
         "topics_divergence_rate": topics_rate,
         "capture_disagreements": capture_dis,
         "intent_disagreements": intent_dis,
+        "capture_drifts": capture_drifts,
+        "capture_abstains": capture_abstains,
+        "intent_drifts": intent_drifts,
+        "intent_abstains": intent_abstains,
         "topics_disagreements": topics_dis,
         # Backwards-compat alias for frontmatter / external consumers.
         "divergence_rate": structural_rate,
@@ -981,6 +1044,10 @@ def render_report(
                 if sampling.get("topics_divergence_rate") is not None
                 else None
             ),
+            "classification_capture_drifts": sampling.get("capture_drifts", 0),
+            "classification_capture_abstains": sampling.get("capture_abstains", 0),
+            "classification_intent_drifts": sampling.get("intent_drifts", 0),
+            "classification_intent_abstains": sampling.get("intent_abstains", 0),
             "classification_check_skipped": sampling.get("skipped", False),
             "tag_violations": tags.get("count", 0),
             "missing_required_field": missing.get("count", 0),
@@ -1051,10 +1118,17 @@ def render_report(
         struct_rate = sampling.get("structural_divergence_rate", 0.0) or 0.0
         topics_rate = sampling.get("topics_divergence_rate", 0.0) or 0.0
         threshold_state = "above" if sampling.get("structural_above_threshold") else "below"
+        cap_dis_w = sampling.get('capture_disagreements', 0.0) or 0.0
+        int_dis_w = sampling.get('intent_disagreements', 0.0) or 0.0
+        cap_drift = sampling.get('capture_drifts', 0)
+        cap_abstain = sampling.get('capture_abstains', 0)
+        int_drift = sampling.get('intent_drifts', 0)
+        int_abstain = sampling.get('intent_abstains', 0)
         lines.append(
             f"**Structural divergence (capture+intent):** {struct_rate:.4f} "
-            f"(`{sampling.get('capture_disagreements', 0)}` capture + "
-            f"`{sampling.get('intent_disagreements', 0)}` intent disagreements; "
+            f"(`{cap_dis_w}` capture [{cap_drift} drift + {cap_abstain} abstain] "
+            f"+ `{int_dis_w}` intent [{int_drift} drift + {int_abstain} abstain] "
+            f"weighted disagreements; "
             f"{threshold_state} {DIVERGENCE_THRESHOLD} threshold; tier-driver)\n"
         )
         lines.append(
@@ -1078,7 +1152,12 @@ def render_report(
                             f"added={detail['added']}, removed={detail['removed']}\n"
                         )
                     else:
-                        lines.append(f"  - {field}: stored={detail['stored']!r}, audit={detail['audit']!r}\n")
+                        kind = detail.get("kind", "drift")
+                        weight = detail.get("weight", 1.0)
+                        lines.append(
+                            f"  - {field}: stored={detail['stored']!r}, "
+                            f"audit={detail['audit']!r} ({kind}, weight={weight})\n"
+                        )
 
     # Section 5
     lines.append("\n## 5. Tag-consistency\n")

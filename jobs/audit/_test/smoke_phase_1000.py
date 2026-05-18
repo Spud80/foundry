@@ -691,6 +691,21 @@ def scenario_sync_conflict_files_skipped():
 
 # ---------- Runner ----------
 
+def scenario_axis_disagreement_weights():
+    """Verify _axis_disagreement asymmetric null-handling per audit-pass-spec §4."""
+    # Agreement -> None
+    assert audit._axis_disagreement("note", "note") is None
+    assert audit._axis_disagreement(None, None) is None
+    # Drift (both non-None, different) -> weight 1.0
+    res = audit._axis_disagreement("note", "idea")
+    assert res == (1.0, "drift"), f"expected (1.0, 'drift'), got {res!r}"
+    # Abstain (exactly one side None) -> weight 0.5
+    res = audit._axis_disagreement("followup", None)
+    assert res == (0.5, "abstain"), f"expected (0.5, 'abstain'), got {res!r}"
+    res = audit._axis_disagreement(None, "followup")
+    assert res == (0.5, "abstain"), f"expected (0.5, 'abstain'), got {res!r}"
+
+
 SCENARIOS = [
     scenario_empty_vault,
     scenario_dedup_collision,
@@ -708,6 +723,7 @@ SCENARIOS = [
     scenario_sampling_skipped,
     scenario_sampling_topics_demoted,
     scenario_sampling_structural_drives_tier,
+    scenario_axis_disagreement_weights,
     scenario_tier_aggregation_kritisk,
     scenario_atomic_write_tempfile,
     scenario_heartbeat_consecutive_counters,
