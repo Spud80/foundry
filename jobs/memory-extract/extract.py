@@ -486,6 +486,40 @@ OVERSIZED_CONTEXT_MODEL = "claude-opus-4-7[1m]"
 OVERSIZED_ERROR_MARKERS = ("Prompt is too long", "prompt is too long")
 
 
+# Harness-internal tags from the captured session that act as prompt-injection
+# vectors when fed back to Claude as user content. The extractor model parses
+# `<system-reminder>` etc. as REAL harness instructions (not transcript content)
+# and may try to use tools (TaskCreate etc.) that aren't available in extract
+# context, triggering structured-output-retry exhaustion
+# (subtype=error_max_structured_output_retries, stop_reason=tool_use).
+# Reproduced 2026-05-21 on session db0cdd12-3fe8-4456-ba88-0f54cb09f3d9: a
+# session containing 2 `<system-reminder>` tags burned ~$0.30 / 196s / 6 turns
+# before exhausting retries. A sibling session in the same date-dir with 0
+# such tags processed cleanly. Sanitising at extract-input boundary is the
+# correct layer: raw files stay faithful to the captured session, but the LLM
+# never sees the dangerous syntax.
+_HARNESS_TAG_RE = re.compile(
+    r'<(system-reminder|function_calls|function_results|antml:function_calls|antml:invoke|antml:parameter)\b[^>]*>.*?</\1>',
+    re.DOTALL | re.IGNORECASE,
+)
+_HARNESS_OPEN_TAG_RE = re.compile(
+    r'</?(?:system-reminder|function_calls|function_results|antml:function_calls|antml:invoke|antml:parameter)\b[^>]*>',
+    re.IGNORECASE,
+)
+
+
+def sanitize_harness_tags(text: str) -> str:
+    """Neutralise harness-internal tags in the captured transcript before
+    sending to the extractor LLM. Replaces balanced tag-blocks with a marker;
+    strips orphan open/close tags from truncated captures. Preserves the
+    transcript's information density while removing the prompt-injection
+    surface.
+    """
+    text = _HARNESS_TAG_RE.sub('[harness-tag redacted]', text)
+    text = _HARNESS_OPEN_TAG_RE.sub('', text)
+    return text
+
+
 def _is_oversize_error(stdout: str) -> bool:
     try:
         d = json.loads(stdout)
@@ -685,6 +719,7 @@ def process_session(
     """
     raw_text = raw_path.read_text(encoding="utf-8")
     validate_raw_schema(raw_text, raw_path)  # H5: raises RawSchemaError on FATAL
+    raw_text = sanitize_harness_tags(raw_text)  # strip prompt-injection vectors
     if args.dry_run:
         print(f"  [dry-run] would call claude for {date}/{session_id}", file=sys.stderr)
         return 0
