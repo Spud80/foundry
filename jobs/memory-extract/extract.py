@@ -498,12 +498,20 @@ OVERSIZED_ERROR_MARKERS = ("Prompt is too long", "prompt is too long")
 # such tags processed cleanly. Sanitising at extract-input boundary is the
 # correct layer: raw files stay faithful to the captured session, but the LLM
 # never sees the dangerous syntax.
+#
+# Extended 2026-05-26 after session 19102926-0b6f-4b45-ab34-39f7fcbac4ac burned
+# ~$0.55 / 169s / 7 turns: original list missed `<tool_use_error>` (6 occurrences
+# in that file) and `<persisted-output>` (1). Survey of full raw-archive at fix-time:
+# 1037 `<tool_use_error>`, 283 `<persisted-output>`, 40 `<bash-stdout>`, 40
+# `<bash-stderr>` spread across 546 raw files - all added preemptively. The failure
+# rate is probabilistic (LLM may or may not act on a given harness-marker), so most
+# files happened to process cleanly historically.
 _HARNESS_TAG_RE = re.compile(
-    r'<(system-reminder|function_calls|function_results|antml:function_calls|antml:invoke|antml:parameter)\b[^>]*>.*?</\1>',
+    r'<(system-reminder|function_calls|function_results|antml:function_calls|antml:invoke|antml:parameter|tool_use_error|persisted-output|bash-stdout|bash-stderr)\b[^>]*>.*?</\1>',
     re.DOTALL | re.IGNORECASE,
 )
 _HARNESS_OPEN_TAG_RE = re.compile(
-    r'</?(?:system-reminder|function_calls|function_results|antml:function_calls|antml:invoke|antml:parameter)\b[^>]*>',
+    r'</?(?:system-reminder|function_calls|function_results|antml:function_calls|antml:invoke|antml:parameter|tool_use_error|persisted-output|bash-stdout|bash-stderr)\b[^>]*>',
     re.IGNORECASE,
 )
 
