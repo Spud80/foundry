@@ -42,15 +42,15 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# K6 Sources-append + aliases-loading live in a shared library so the CLI
+# Sources-append + aliases-loading live in a shared library so the CLI
 # (`memory-sources-append`) and this extract-cron use the exact same
-# atomic-rename / flock mechanics AND aliases-loading semantics (G3a-4
+# atomic-rename / flock mechanics AND aliases-loading semantics (cross-domain-detect
 # Runde 10 acceptance: "ekte ekstraksjon, ikke kopi"; aliases-relocation
 # 2026-05-14 to unblock /usr/local/bin/-only deploy on foundry-CT where
 # extract.py is NOT in sys.path). The names below are re-exported for
 # backward-compat with smoke_k5_k6.py and any downstream importer of
 # `extract` (e.g. `extract.load_aliases`, `extract.AliasesError`).
-from _k6_source_append import (  # noqa: F401  (re-export)
+from _source_append import (  # noqa: F401  (re-export)
     _HAS_FCNTL,
     _SOURCES_HEADER_RE,
     _insert_under_sources,
@@ -210,7 +210,7 @@ def quarter_for(date_iso: str) -> str:
     return f"{y}-Q{q}"
 
 
-# ----- Notify helper (K5/K6 fail-mode signaling) -----
+# ----- Notify helper (aliases-consumption/sources-append fail-mode signaling) -----
 
 def notify(message: str) -> None:
     """Emit WARN/NOTIFY to stderr. If FOUNDRY_NOTIFY_SH env-var points at an
@@ -282,7 +282,7 @@ def validate_raw_schema(raw_text: str, raw_path: Path) -> None:
         )
 
 
-# ----- Aliases (K5: producer-side topic normalisation) -----
+# ----- Aliases (aliases-consumption: producer-side topic normalisation) -----
 
 def build_vocab_section(canonicals: list[str]) -> str:
     """Render the canonical vocabulary block appended to system-prompt.
@@ -315,7 +315,7 @@ def resolve_topic(topic: str, alias_map: dict[str, str]) -> str:
     return "¤" + canonical
 
 
-# ``atomic_write`` is now imported from _k6_source_append (single source of
+# ``atomic_write`` is now imported from _source_append (single source of
 # truth shared with the CLI). Re-exported above so existing call-sites in
 # this module need no change.
 
@@ -695,7 +695,7 @@ def append_blocks(target: Path, blocks: list[str]) -> None:
 
 
 # ``append_to_compiled_sources`` + ``_insert_under_sources`` + ``_HAS_FCNTL``
-# are re-exported from _k6_source_append at the top of this module. The K6
+# are re-exported from _source_append at the top of this module. The sources-append
 # logic is owned by that lib (single source of truth shared with the
 # ``memory-sources-append`` CLI).
 
@@ -715,12 +715,12 @@ def process_session(
 ) -> int:
     """Returns number of entries written for this session.
 
-    K5 (alias-resolution): every tag in entry['topics'] is mapped through
+    aliases-consumption (alias-resolution): every tag in entry['topics'] is mapped through
     alias_map BEFORE the heading-block is formatted. Tags absent from the map
     pass through (genuinely new subjects). Modal tags are appended later by
     format_heading_block and are never alias-resolved.
 
-    K6 (Sources-append): for each successfully-written entry, for each
+    sources-append (Sources-append): for each successfully-written entry, for each
     canonical tag in the (already alias-resolved) topics list, append a
     source-link to compiled/<canonical>.md ## Sources section if that file
     exists. Idempotent + best-effort: errors logged, never abort the session.
@@ -753,7 +753,7 @@ def process_session(
         if violations:
             print(f"  WARN: skipping entry {idx} in {session_id}: {'; '.join(violations)}", file=sys.stderr)
             continue
-        # K5: alias-resolve topics in-place (safety-net for LLM not following vocab hint)
+        # aliases-consumption: alias-resolve topics in-place (safety-net for LLM not following vocab hint)
         if alias_map:
             entry["topics"] = [resolve_topic(t, alias_map) for t in entry["topics"]]
         q = quarter_for(entry["date"])
@@ -761,7 +761,7 @@ def process_session(
         block = format_heading_block(entry, date=date, session_id=session_id)
         blocks_by_target.setdefault(target, []).append(block)
         written += 1
-        # K6: Sources-append for each canonical tag with an existing compiled file
+        # sources-append: Sources-append for each canonical tag with an existing compiled file
         source_link = f"- [[{date}/{session_id}]] - {entry['slug']}"
         seen_canonicals: set[str] = set()
         for tag in entry["topics"]:
@@ -833,7 +833,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     system_prompt = args.system_prompt_file.read_text(encoding="utf-8")
 
-    # ----- Aliases (K5: producer-side topic normalisation) -----
+    # ----- Aliases (aliases-consumption: producer-side topic normalisation) -----
     # Failure semantics per foundry CONTRACT.md "Aliases-konsumering > Fail-modes":
     #   missing  -> graceful degrade + WARNING notify + exit 0
     #   empty    -> silent run without normalisation (valid pre-bootstrap state)

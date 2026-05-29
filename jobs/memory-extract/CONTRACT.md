@@ -164,7 +164,7 @@ mellom obsidian-memory og foundry før producer endrer. Foundry oppdaterer egen
 
 Etter at en heading-blokk er skrevet til `extracted/<type>-YYYY-QN.md` gjør extract.py
 en post-write pass mot `compiled/<canonical>.md`-filer per entry: for hver canonical-tag
-i entry.topics (etter K5 alias-resolving) sjekker den om `compiled/<canonical>.md`
+i entry.topics (etter aliases-consumption alias-resolving) sjekker den om `compiled/<canonical>.md`
 finnes; hvis ja, atomic-append'es `- [[<date>/<session-id>]] - <heading-slug>` under
 `## Sources`-seksjonen. Auto-creates `## Sources`-seksjonen på EOF hvis den mangler.
 
@@ -177,7 +177,7 @@ Spec-autoritet: `dev-environment/docs/reference/memory-knowledge-contract.md`
 |--------|-------|
 | Path | `${OBSIDIAN_VAULT_ROOT}/8.Cortex/Memory/compiled/<canonical>.md` |
 | Source-link-format | `- [[<YYYY-MM-DD>/<session-id>]] - <kebab-case-slug>` (`<date>/<session-id>` matcher source-raw-fila per heading-blokk-spec) |
-| Eier | obsidian-memory G3a-2 oppretter compiled/-filer; foundry-extract bare appender source-links til `## Sources` |
+| Eier | obsidian-memory deep-compile oppretter compiled/-filer; foundry-extract bare appender source-links til `## Sources` |
 | Sync-kanal | Syncthing-folder `obsidian` (samme som vault-resten) |
 
 ### Idempotency-garanti
@@ -207,7 +207,7 @@ Windows (lokale smoke-tests):
 
 | Tilstand | Foundry-respons |
 |----------|-----------------|
-| `compiled/<canonical>.md` finnes ikke | Status `missing`, no-op (extracted/ er ground-truth - obsidian-memory G3a-2 oppretter compiled-filer separat ved threshold) |
+| `compiled/<canonical>.md` finnes ikke | Status `missing`, no-op (extracted/ er ground-truth - obsidian-memory deep-compile oppretter compiled-filer separat ved threshold) |
 | `compiled/<canonical>.md` finnes, source-link allerede til stede | Status `already-present`, idempotent skip |
 | Transient I/O-feil ved lock/read/write | Status `error: <msg>` logges til stderr; entry-prosessering fortsetter (extracted/-skrivingen er allerede committet, extracted/ er ground-truth) |
 | `## Sources`-seksjonen mangler i en eksisterende compiled-fil | Seksjonen auto-creates på EOF og source-link skrives inn |

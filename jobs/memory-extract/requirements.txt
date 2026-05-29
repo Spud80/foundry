@@ -1,7 +1,7 @@
 # obsidian-memory extract.py runtime dependencies
 # Standalone Python 3.11+.
 # requests: optional Syncthing REST API pre-flight check.
-# pyyaml: aliases.yaml parsing for K5 producer-side topic normalisation
+# pyyaml: aliases.yaml parsing for aliases-consumption producer-side topic normalisation
 #         (cross-plan-koordinering 2026-05-10, PLAN-foundry Phase 700).
 requests>=2.31.0
 pyyaml>=6.0

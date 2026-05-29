@@ -63,7 +63,7 @@ ssh foundry "~/foundry/_shared/notify.sh 'manual test from CLAUDE.md'"
 | 500 | Deploy-pipeline (deploy.sh, auto-update.sh) + notify-wrappers + CI smoke-test + memory-extract job-skeleton | 0.5.0 | done |
 | 600 | Memory-extract aktivering (Phase E payload-import fra obsidian-memory; 18:30 norsk lokal-tid) | - | done |
 | 700 | Aliases.yaml producer-side normalisering i extract.py | - | done (strukturelt; steady-state-verifisering organisk) |
-| 800 | K6 Sources-append-pass i extract.py + dedikert `memory-sources-append`-CLI | - | done |
+| 800 | Sources-append-pass i extract.py + dedikert `memory-sources-append`-CLI | - | done |
 | 900 | Foundry-fallback classifier-cron (03:00 norsk lokal-tid) for `pending-foundry-*.md` | - | strukturelt deployet 2026-05-13 commit `65357ed`; ende-til-ende-test pending PLAN-3X Phase 600 |
 | 1000 | Audit-pass nightly cron (04:00 norsk lokal-tid) - 6 audit-sjekker per `audit-pass-spec.md` | - | strukturelt deployet 2026-05-14 commit `fb8945e`; første reelle 04:00-fyring 2026-05-15 |
 
@@ -81,7 +81,7 @@ ssh foundry "~/foundry/_shared/notify.sh 'manual test from CLAUDE.md'"
 | `bootstrap/logrotate.foundry` | exists | weekly × 12 rotate for ~/foundry/logs/ |
 | `cron.d/` | exists | Crontab-fragmenter: auto-update (`10,25,40,55 * * * *`), drain-queue (`*/5`), memory-extract (`30 18`), fallback-classifier (`0 3`), audit (`0 4`), capture-heartbeat (`0 19`), token-expiry-check (`0 9`) |
 | `_shared/` | exists | notify-core.sh + notify.sh + drain-queue.sh + token-expiry-check.sh + capture-heartbeat.sh |
-| `jobs/memory-extract/` | exists (Phase 600+700+800) | Phase E memory-extract: run.sh + CONTRACT.md + extract.py (LLM-classify + K5 aliases-normalisering + K6 Sources-append) |
+| `jobs/memory-extract/` | exists (Phase 600+700+800) | Phase E memory-extract: run.sh + CONTRACT.md + extract.py (LLM-classify + aliases-consumption aliases-normalisering + Sources-append) |
 | `jobs/fallback-classifier/` | exists (Phase 900) | Foundry-fallback classifier for `pending-foundry-*.md`: run.sh + CONTRACT.md + system-prompt.md + classify.py + smoke-test. Atomic mutate-first-then-rename + 4-state recovery-scan |
 | `jobs/audit/` | exists (Phase 1000) | Nattlig audit-pass per `dev-environment/docs/reference/audit-pass-spec.md`: run.sh + CONTRACT.md + system-prompt.md + audit.py + smoke-test. 6 audit-sjekker, tiered Telegram, rapport-fil til `5.Utility/Pipeline/Audit-Reports/YYYY-MM-DD.md`, heartbeat-state `~/.audit-state.json` |
 | `.github/workflows/smoke-test.yml` | exists | CI: shellcheck + cron-syntax + deploy-dry-run + notify-paritet |

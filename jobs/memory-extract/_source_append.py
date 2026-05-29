@@ -1,8 +1,8 @@
-"""K6 Sources-append shared library (+ aliases-loading primitives).
+"""Sources-append shared library (+ aliases-loading primitives).
 
-Authoritative implementation of two K6-related contracts:
+Authoritative implementation of two sources-append-related contracts:
 
-1. The K6 cross-project Sources-append contract: appending source-links to
+1. The sources-append cross-project Sources-append contract: appending source-links to
    the ``## Sources`` section of ``compiled/<canonical>.md`` files in an
    atomic, idempotent, concurrency-safe manner.
 
@@ -11,7 +11,7 @@ Authoritative implementation of two K6-related contracts:
    post-LLM canonical-mapping) and the ``memory-sources-append`` CLI
    (resolving note frontmatter topics -> canonical compiled-file names).
 
-Per PLAN-obsidian-memory G3a-4 Runde 10 acceptance ("ekte ekstraksjon, ikke
+Per PLAN-obsidian-memory cross-domain-detect Runde 10 acceptance ("ekte ekstraksjon, ikke
 kopi"):
 
 - ``extract.py`` imports ``append_to_compiled_sources``, ``load_aliases``,
