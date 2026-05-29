@@ -6,6 +6,12 @@ Foundry leverer runtime, scheduling og pre-flight; obsidian-memory leverer Phase
 **Status:** Phase 600 importert 2026-05-08. extract.py + system-prompt.md + requirements.txt
 levert mot denne kontrakten fra `dev-environment/scripts/memory/` (commit `8e2d89d`).
 
+**Status (v2-reimport 2026-05-29):** extract.py reimportert fra `cortex/scripts/memory/`
+(lift-and-shift-master, commit `0754017`) og oppdatert til cortex-memory-v2: `append_to_compiled_sources`
+droppet (compile-pass eier sources i v2), `_aliases.py` + `_paths.py` lagt til som vendrede deps,
+`_source_append.py` fjernet. Harness-tag-sanitizer (opprinnelig laget i denne foundry-kopien) er
+back-portet til cortex-master og fulgte med reimporten - ingen sikkerhets-regresjon.
+
 **Filformat-autoritet:** `dev-environment/docs/reference/memory-knowledge-contract.md`
 ([GitHub](https://github.com/Spud80/dev-environment/blob/main/docs/reference/memory-knowledge-contract.md))
 eier raw/-format, manifest-format, og extracted/-format inkludert `schema_version`. Foundry
@@ -17,7 +23,9 @@ Følgende filer importeres til `~/foundry/jobs/memory-extract/` på CT:
 
 | Fil | Type | Eier | Beskrivelse |
 |-----|------|------|-------------|
-| `extract.py` | Python 3.11+ | obsidian-memory | LLM-klassifisering av raw → typed extracted-entries; standalone, ingen kryss-import |
+| `extract.py` | Python 3.11+ | obsidian-memory | LLM-klassifisering av raw → typed extracted-entries; importerer `_aliases` + `_paths` (vendret ved siden av) |
+| `_aliases.py` | Python 3.11+ | obsidian-memory | `load_aliases` + `AliasesError` (aliases.yaml-parsing for topic-normalisering); vendret dep for extract.py |
+| `_paths.py` | Python 3.11+ | obsidian-memory | `resolve_vault_root` (CLI > env > platform-default); vendret dep for extract.py |
 | `system-prompt.md` | Markdown | obsidian-memory | `--system-prompt`-content for `claude -p` (override av default Claude Code system prompt) |
 | `requirements.txt` | Python deps | obsidian-memory | `requests>=2.31.0` (kun for optional Syncthing REST-pre-flight); deploy.sh setter opp `.venv/` |
 

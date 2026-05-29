@@ -39,34 +39,20 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Sources-append + aliases-loading live in a shared library so the CLI
+# Aliases-loading lives in a shared helper so the CLI
 # (`memory-sources-append`) and this extract-cron use the exact same
-# atomic-rename / flock mechanics AND aliases-loading semantics (cross-domain-detect
-# Runde 10 acceptance: "ekte ekstraksjon, ikke kopi"; aliases-relocation
-# 2026-05-14 to unblock /usr/local/bin/-only deploy on foundry-CT where
-# extract.py is NOT in sys.path). The names below are re-exported for
-# backward-compat with smoke_k5_k6.py and any downstream importer of
-# `extract` (e.g. `extract.load_aliases`, `extract.AliasesError`).
-from _source_append import (  # noqa: F401  (re-export)
-    _HAS_FCNTL,
-    _SOURCES_HEADER_RE,
-    _insert_under_sources,
-    ALIASES_FILENAME,
-    AliasesError,
-    MIN_ALIASES_SCHEMA_VERSION,
-    append_to_compiled_sources,
-    atomic_write,
-    load_aliases,
-)
+# load_aliases semantics. Sources-append was dropped in cortex-memory-v2
+# (compile-pass owns sources; extract no longer mutates compiled/).
+from _aliases import AliasesError, load_aliases
 
 SCHEMA_VERSION = 1
 TYPES = ("observation", "decision", "learning", "error", "pattern", "intent")
 MANIFEST_FILENAME = "_capture-manifest.json"
 STATE_FILENAME = ".compile-state.json"
-COMPILED_DIRNAME = "compiled"
 # Raw-side schema floor (H5, 2026-05-14). Per memory-knowledge-contract.md
 # raw-frontmatter contains `raw_schema_version: N`. Pre-H5 files carry only
 # legacy `contract-version: 1`; we accept those as version-1-equivalent for
@@ -193,14 +179,8 @@ updated: {today}
 # ----- Path helpers -----
 
 def vault_root_from_args(args: argparse.Namespace) -> Path:
-    if args.vault_root:
-        return Path(args.vault_root)
-    env = os.environ.get("OBSIDIAN_VAULT_ROOT")
-    if env:
-        return Path(env)
-    if sys.platform.startswith("linux"):
-        return Path("/data/sync/obsidian/My Vault")
-    return Path("C:/sync/obsidian/My Vault")
+    from _paths import resolve_vault_root
+    return resolve_vault_root(args.vault_root)
 
 
 def quarter_for(date_iso: str) -> str:
@@ -315,9 +295,24 @@ def resolve_topic(topic: str, alias_map: dict[str, str]) -> str:
     return "¤" + canonical
 
 
-# ``atomic_write`` is now imported from _source_append (single source of
-# truth shared with the CLI). Re-exported above so existing call-sites in
-# this module need no change.
+def atomic_write(target: Path, content: str, *, mode: int = 0o664) -> None:
+    """Atomic write with explicit chmod (preserves POSIX ACL mask on filehub)."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=target.name + ".", suffix=".tmp", dir=str(target.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(content)
+        os.replace(tmp, target)
+        try:
+            os.chmod(target, mode)
+        except OSError:
+            pass  # Windows / non-POSIX
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def sha256_of(path: Path) -> str:
@@ -341,6 +336,13 @@ class PreflightShaMismatchError(PreflightError):
     stale (typically after backup-restore or external file modification) and
     will not self-heal by retrying. Caller exits 3 to escalate via run.sh
     Telegram notify, prompting manual `reconcile-manifest.py --apply`.
+
+    CONTRACT (do not break): this class MUST remain a subclass of PreflightError.
+    The exit-3 handling in main() catches PreflightShaMismatchError BEFORE the
+    generic PreflightError handler. If the inheritance is broken (e.g. someone
+    renames the base or moves the class), the broader PreflightError handler
+    will silently swallow sha-mismatch errors and return exit 0 - reintroducing
+    the silent-abort bug this class was created to prevent (2026-05-15 incident).
     """
 
 
@@ -449,15 +451,27 @@ def state_processed_set(state: dict) -> set[tuple[str, str]]:
 
 
 def extracted_processed_set(extracted_dir: Path) -> set[tuple[str, str]]:
-    """Scan extracted/*.md for source: [[<date>/<session-id>]] refs."""
+    """Scan extracted/*.md for processed raw-sessions.
+
+    Counts both the per-entry ``source: [[<date>/<session-id>]]`` ref and any
+    ``merged_sources: [[<date>/<session-id>]], ...`` refs left behind by the
+    extracted-dedup sweep (reorganize-extracted-dedup.py). Counting
+    merged_sources is what keeps ``--force-rebuild`` from re-extracting - and
+    thereby re-duplicating - a raw-session whose entry was merged away.
+    """
     out: set[tuple[str, str]] = set()
     if not extracted_dir.is_dir():
         return out
     pattern = re.compile(r"^source:\s*\[\[(\d{4}-\d{2}-\d{2})/([0-9a-f-]+)\]\]", re.M)
+    merged_line = re.compile(r"^merged_sources:\s*(.+)$", re.M)
+    sid_pat = re.compile(r"\[\[(\d{4}-\d{2}-\d{2})/([0-9a-f-]+)\]\]")
     for f in extracted_dir.glob("*.md"):
         text = f.read_text(encoding="utf-8")
         for date, sid in pattern.findall(text):
             out.add((date, sid))
+        for line in merged_line.findall(text):
+            for date, sid in sid_pat.findall(line):
+                out.add((date, sid))
     return out
 
 
@@ -694,12 +708,6 @@ def append_blocks(target: Path, blocks: list[str]) -> None:
     atomic_write(target, existing + "".join(blocks))
 
 
-# ``append_to_compiled_sources`` + ``_insert_under_sources`` + ``_HAS_FCNTL``
-# are re-exported from _source_append at the top of this module. The sources-append
-# logic is owned by that lib (single source of truth shared with the
-# ``memory-sources-append`` CLI).
-
-
 # ----- Per-session processing -----
 
 def process_session(
@@ -708,7 +716,6 @@ def process_session(
     date: str,
     session_id: str,
     extracted_dir: Path,
-    compiled_dir: Path,
     alias_map: dict[str, str],
     system_prompt: str,
     args: argparse.Namespace,
@@ -720,10 +727,8 @@ def process_session(
     pass through (genuinely new subjects). Modal tags are appended later by
     format_heading_block and are never alias-resolved.
 
-    sources-append (Sources-append): for each successfully-written entry, for each
-    canonical tag in the (already alias-resolved) topics list, append a
-    source-link to compiled/<canonical>.md ## Sources section if that file
-    exists. Idempotent + best-effort: errors logged, never abort the session.
+    sources-append (Sources-append) was dropped in cortex-memory-v2: extract.py no longer
+    mutates compiled/, sources are owned by compile-pass.
     """
     raw_text = raw_path.read_text(encoding="utf-8")
     validate_raw_schema(raw_text, raw_path)  # H5: raises RawSchemaError on FATAL
@@ -761,29 +766,6 @@ def process_session(
         block = format_heading_block(entry, date=date, session_id=session_id)
         blocks_by_target.setdefault(target, []).append(block)
         written += 1
-        # sources-append: Sources-append for each canonical tag with an existing compiled file
-        source_link = f"- [[{date}/{session_id}]] - {entry['slug']}"
-        seen_canonicals: set[str] = set()
-        for tag in entry["topics"]:
-            if not isinstance(tag, str) or not tag.startswith("¤"):
-                continue
-            canonical = tag[1:]
-            if canonical in seen_canonicals:
-                continue  # dedup if entry has same canonical twice (post alias-resolve)
-            seen_canonicals.add(canonical)
-            compiled_path = compiled_dir / f"{canonical}.md"
-            status = append_to_compiled_sources(compiled_path, source_link)
-            if status == "missing":
-                continue  # no compiled file yet for this canonical - normal
-            if status == "appended":
-                if args.verbose:
-                    print(f"    sources: appended to {compiled_path.name}", file=sys.stderr)
-            elif status == "already-present":
-                if args.verbose:
-                    print(f"    sources: already present in {compiled_path.name}", file=sys.stderr)
-            elif status.startswith("error:"):
-                # Best-effort: log but don't fail the session - extracted/ is ground truth
-                print(f"  WARN: sources-append {compiled_path.name}: {status}", file=sys.stderr)
     # Flush batched blocks - one atomic_write per target instead of one per entry
     for target, blocks in blocks_by_target.items():
         append_blocks(target, blocks)
@@ -825,7 +807,6 @@ def main(argv: list[str] | None = None) -> int:
     memory_dir = vault / "8.Cortex" / "Memory"
     raw_root = memory_dir / "raw"
     extracted_dir = memory_dir / "extracted"
-    compiled_dir = memory_dir / COMPILED_DIRNAME
     state_path = memory_dir / STATE_FILENAME
 
     if not args.system_prompt_file.exists():
@@ -946,7 +927,6 @@ def main(argv: list[str] | None = None) -> int:
                 date=date,
                 session_id=sid,
                 extracted_dir=extracted_dir,
-                compiled_dir=compiled_dir,
                 alias_map=alias_map,
                 system_prompt=system_prompt,
                 args=args,
