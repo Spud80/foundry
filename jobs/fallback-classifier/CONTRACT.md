@@ -12,8 +12,8 @@ Phase 450 inbox-handler) plukker dem opp i neste runde.
 **Status:** Phase 900 (PLAN-foundry) - strukturell deploy uavhengig av PLAN-3X
 Phase 600 (batch-processor); reell ende-til-ende-test gated på Phase 600-leveranse.
 
-**Filformat-autoritet:** `dev-environment/docs/reference/capture-vocabulary.md`
-([GitHub](https://github.com/Spud80/dev-environment/blob/main/docs/reference/capture-vocabulary.md))
+**Filformat-autoritet:** `cortex/docs/contracts/capture-vocabulary.md`
+([GitHub](https://github.com/Spud80/cortex/blob/dev/docs/contracts/capture-vocabulary.md))
 eier frontmatter-skjema, `pre_classified`-enum, hard-required-felt og pipeline-
 state-machine. Foundry CONTRACT.md (denne fila) eier kun runtime-grensesnittet.
 
@@ -239,7 +239,7 @@ Aggregert exit-kode-logikk: exit 2 (fatal) > exit 1 (any transient) > exit 0 (cl
   krever pull-request mot DENNE fila + koordinering mot PLAN-foundry.
 - Endringer i input-format (`pending-foundry-*.md`-frontmatter, `foundry_pending`-
   marker, hard-required-felt) eier vault-sentinel via
-  `dev-environment/docs/reference/capture-vocabulary.md`. Foundry reagerer kun
+  `cortex/docs/contracts/capture-vocabulary.md`. Foundry reagerer kun
   hvis runtime-grensesnittet endres som følge.
 - Foundry kan endre run.sh + classify.py internals (lock-mekanikk, timeout-
   verdier, notify-format, JSON-schema mellom system-prompt og classify.py) uten
@@ -251,6 +251,6 @@ Aggregert exit-kode-logikk: exit 2 (fatal) > exit 1 (any transient) > exit 0 (cl
 - `[[PLAN-foundry]]` Phase 900 - implementering, task-list, acceptance
 - `[[PLAN-3X-cortex-annotation-bridge]]` Phase 450 - inbox-handler interim-arkitektur
 - `[[PLAN-3X-cortex-annotation-bridge]]` Phase 600 - pre_classified pickup-logikk (produsent av pending-filer)
-- `dev-environment/docs/reference/capture-vocabulary.md` - filformat-autoritet
+- `cortex/docs/contracts/capture-vocabulary.md` - filformat-autoritet
   (frontmatter-skjema, `pre_classified`-enum, pipeline-state-machine)
 - `jobs/memory-extract/CONTRACT.md` - parallell mønster (Phase 600 leveranse-kontrakt)

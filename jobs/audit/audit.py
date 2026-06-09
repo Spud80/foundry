@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """audit.py - foundry-audit nightly vault audit-pass.
 
-Scans the Obsidian vault per `dev-environment/docs/reference/audit-pass-spec.md`
+Scans the Obsidian vault per `cortex/docs/contracts/audit-pass-spec.md`
 (schema_version 1), runs six audit-checks, writes a daily report-file to
 `5.Utility/Pipeline/Audit-Reports/YYYY-MM-DD.md`, updates heartbeat-state at
 `~/.audit-state.json`, and emits tiered Telegram alerts.
 
 Spec authority:
-  dev-environment/docs/reference/audit-pass-spec.md
+  cortex/docs/contracts/audit-pass-spec.md
   jobs/audit/CONTRACT.md (runtime interface)
 
 Exit-codes:

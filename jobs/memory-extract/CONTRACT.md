@@ -12,8 +12,8 @@ droppet (compile-pass eier sources i v2), `_aliases.py` + `_paths.py` lagt til s
 `_source_append.py` fjernet. Harness-tag-sanitizer (opprinnelig laget i denne foundry-kopien) er
 back-portet til cortex-master og fulgte med reimporten - ingen sikkerhets-regresjon.
 
-**Filformat-autoritet:** `dev-environment/docs/reference/memory-knowledge-contract.md`
-([GitHub](https://github.com/Spud80/dev-environment/blob/main/docs/reference/memory-knowledge-contract.md))
+**Filformat-autoritet:** `cortex/docs/contracts/memory-knowledge-contract.md`
+([GitHub](https://github.com/Spud80/cortex/blob/dev/docs/contracts/memory-knowledge-contract.md))
 eier raw/-format, manifest-format, og extracted/-format inkludert `schema_version`. Foundry
 CONTRACT.md (denne fila) eier kun runtime-grensesnittet.
 
@@ -184,7 +184,7 @@ i entry.topics (etter aliases-consumption alias-resolving) sjekker den om `compi
 finnes; hvis ja, atomic-append'es `- [[<date>/<session-id>]] - <heading-slug>` under
 `## Sources`-seksjonen. Auto-creates `## Sources`-seksjonen på EOF hvis den mangler.
 
-Spec-autoritet: `dev-environment/docs/reference/memory-knowledge-contract.md`
+Spec-autoritet: `cortex/docs/contracts/memory-knowledge-contract.md`
 "Compiled-update protocol" → "Sources layer".
 
 ### Path og format
@@ -239,7 +239,7 @@ Foundry abonnerer; format-bumps koordineres samme som schema_version-bumps.
 * Endringer i runtime-grensesnittet (env-vars, exit-codes, pre-flight-rekkefølge) krever
   pull-request mot DENNE fila + koordinering med obsidian-memory.
 * Endringer i filformat (raw/, manifest, extracted/, schema_version) eier obsidian-memory
-  via `dev-environment/docs/reference/memory-knowledge-contract.md`. Foundry reagerer kun
+  via `cortex/docs/contracts/memory-knowledge-contract.md`. Foundry reagerer kun
   hvis runtime-grensesnittet endres som følge.
 * Foundry kan endre run.sh internals (lock-mekanikk, timeout-verdi, notify-format,
   pre-flight-detaljer) uten kontrakts-endring så lenge env-vars og exit-code-mapping
@@ -252,5 +252,5 @@ Foundry abonnerer; format-bumps koordineres samme som schema_version-bumps.
 * `[[SPEC-foundry]]` - runtime-arkitektur, deploy-pipeline, watchdog
 * `[[SPEC-obsidian-memory]]` Phase E - extract-payload-leveranse, 6-type ontologi
 * `[[SPEC-device-sync-and-backup]]` - filehub-cleanup-bridge for pre-flight
-* `dev-environment/docs/reference/memory-knowledge-contract.md` - filformat-autoritet
+* `cortex/docs/contracts/memory-knowledge-contract.md` - filformat-autoritet
   (raw/, manifest, extracted/, schema_version)

@@ -24,7 +24,7 @@ extract-ownership; Runde 6 manifest-handshake):
   (mid-batch-crash safe).
 
 Authoritative file format spec:
-`dev-environment/docs/reference/memory-knowledge-contract.md`.
+`cortex/docs/contracts/memory-knowledge-contract.md`.
 
 Foundry-side wrapping (`foundry/jobs/memory-extract/run.sh`) eats the cron
 trigger, source's `secrets.env` for `CLAUDE_CODE_OAUTH_TOKEN`, and invokes

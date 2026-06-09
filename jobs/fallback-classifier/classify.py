@@ -6,7 +6,7 @@ runs claude -p on partial/none entries, atomic-writes normalized frontmatter,
 and renames to ai-capture-*.md for batch-processor pickup.
 
 Spec authority:
-  dev-environment/docs/reference/capture-vocabulary.md (schema_version 1)
+  cortex/docs/contracts/capture-vocabulary.md (schema_version 1)
   jobs/fallback-classifier/CONTRACT.md (runtime interface)
 
 Exit-codes:

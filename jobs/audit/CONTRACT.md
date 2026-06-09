@@ -1,7 +1,7 @@
 # CONTRACT: foundry/jobs/audit/
 
 Leveranse-kontrakt mellom `[[SPEC-foundry]]` (runtime) og
-`dev-environment/docs/reference/audit-pass-spec.md` (audit-spec, eid av
+`cortex/docs/contracts/audit-pass-spec.md` (audit-spec, eid av
 vault-sentinel).
 
 Foundry-audit-cron kjorer nattlig 04:00 norsk lokal-tid, scanner vault for
@@ -15,8 +15,8 @@ inntakt vault-tilstand; reell ende-til-ende-test mot syntetisk audit-tilstand
 verifisert via smoke-test, organisk steady-state-verifisering gates pa
 forste 04:00-cron-fyring i produksjon.
 
-**Spec-autoritet:** `dev-environment/docs/reference/audit-pass-spec.md`
-([GitHub](https://github.com/Spud80/dev-environment/blob/main/docs/reference/audit-pass-spec.md))
+**Spec-autoritet:** `cortex/docs/contracts/audit-pass-spec.md`
+([GitHub](https://github.com/Spud80/cortex/blob/dev/docs/contracts/audit-pass-spec.md))
 eier audit-sjekkene, output-format, tier-policy og runner-grensesnittet.
 Foundry CONTRACT.md (denne fila) eier kun foundry-side runtime-detaljer
 (paths, secrets, venv).
@@ -155,7 +155,7 @@ Eksklusjoner:
 
 ### Frontmatter-format
 
-Per `dev-environment/docs/reference/capture-vocabulary.md` schema_version 1.
+Per `cortex/docs/contracts/capture-vocabulary.md` schema_version 1.
 Audit forventer:
 
 - Hard-required-felter per `pre_classified`-niva (full / partial / none)
@@ -242,7 +242,7 @@ Per `audit-pass-spec.md` "Idempotency":
 ## Endringskontroll
 
 - Endringer i audit-sjekker, output-format, tier-policy eier vault-sentinel
-  via `dev-environment/docs/reference/audit-pass-spec.md`. Foundry reagerer
+  via `cortex/docs/contracts/audit-pass-spec.md`. Foundry reagerer
   via runner-update + `minimum-supported-schema-version`-bump per spec
   "Bump procedure".
 - Endringer i runtime-grensesnittet (env-vars, exit-codes, pre-flight)
@@ -255,10 +255,10 @@ Per `audit-pass-spec.md` "Idempotency":
 
 - `[[SPEC-foundry]]` - runtime-arkitektur, deploy-pipeline, watchdog
 - `[[PLAN-foundry]]` Phase 1000 - implementering, task-list, acceptance
-- `dev-environment/docs/reference/audit-pass-spec.md` - audit-spec-autoritet
-- `dev-environment/docs/reference/capture-vocabulary.md` - filformat for entries
+- `cortex/docs/contracts/audit-pass-spec.md` - audit-spec-autoritet
+- `cortex/docs/contracts/capture-vocabulary.md` - filformat for entries
   som audites (schema_version 1)
-- `dev-environment/docs/reference/memory-knowledge-contract.md` - raw/-layout
+- `cortex/docs/contracts/memory-knowledge-contract.md` - raw/-layout
   som sjekk 3 wikilink-valideringen leser
 - `jobs/fallback-classifier/CONTRACT.md` - parallell monster (Phase 900)
 - `jobs/memory-extract/CONTRACT.md` - parallell monster (Phase 600)

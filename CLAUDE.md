@@ -83,7 +83,7 @@ ssh foundry "~/foundry/_shared/notify.sh 'manual test from CLAUDE.md'"
 | `_shared/` | exists | notify-core.sh + notify.sh + drain-queue.sh + token-expiry-check.sh + capture-heartbeat.sh |
 | `jobs/memory-extract/` | exists (Phase 600+700+800) | Phase E memory-extract: run.sh + CONTRACT.md + extract.py (LLM-classify + aliases-consumption aliases-normalisering + Sources-append) |
 | `jobs/fallback-classifier/` | exists (Phase 900) | Foundry-fallback classifier for `pending-foundry-*.md`: run.sh + CONTRACT.md + system-prompt.md + classify.py + smoke-test. Atomic mutate-first-then-rename + 4-state recovery-scan |
-| `jobs/audit/` | exists (Phase 1000) | Nattlig audit-pass per `dev-environment/docs/reference/audit-pass-spec.md`: run.sh + CONTRACT.md + system-prompt.md + audit.py + smoke-test. 6 audit-sjekker, tiered Telegram, rapport-fil til `5.Utility/Pipeline/Audit-Reports/YYYY-MM-DD.md`, heartbeat-state `~/.audit-state.json` |
+| `jobs/audit/` | exists (Phase 1000) | Nattlig audit-pass per `cortex/docs/contracts/audit-pass-spec.md`: run.sh + CONTRACT.md + system-prompt.md + audit.py + smoke-test. 6 audit-sjekker, tiered Telegram, rapport-fil til `5.Utility/Pipeline/Audit-Reports/YYYY-MM-DD.md`, heartbeat-state `~/.audit-state.json` |
 | `.github/workflows/smoke-test.yml` | exists | CI: shellcheck + cron-syntax + deploy-dry-run + notify-paritet |
 | `deploy.sh` | exists | Atomisk regenerering av claude-bruker-crontab fra cron.d/, idempotent venv-setup |
 | `auto-update.sh` | exists | Defensiv git-flow på CT (fetch + reset --hard origin/$FOUNDRY_BRANCH + deploy.sh) |
@@ -120,7 +120,7 @@ ssh foundry "~/foundry/_shared/notify.sh 'manual test from CLAUDE.md'"
 | `_shared/notify-core.sh` | Felles queue+drain-helpers; source'es av både notify.sh og watchdog-notify.sh - paritet enforced av CI |
 | `jobs/memory-extract/CONTRACT.md` | Leveranse-kontrakt mot obsidian-memory: env-vars, exit-codes, pre-flight, manifest-format-referanse |
 | `jobs/fallback-classifier/CONTRACT.md` | Phase 900 runtime-kontrakt: input `pending-foundry-*.md`, atomic mutate-first-then-rename, 4-state recovery-scan, exit-codes |
-| `jobs/audit/CONTRACT.md` | Phase 1000 runtime-kontrakt: 6 audit-sjekker, tier-policy (silent/lav/hoy/kritisk), atomic rapport-write, heartbeat-state semantikk. Spec-autoritet: `dev-environment/docs/reference/audit-pass-spec.md` |
+| `jobs/audit/CONTRACT.md` | Phase 1000 runtime-kontrakt: 6 audit-sjekker, tier-policy (silent/lav/hoy/kritisk), atomic rapport-write, heartbeat-state semantikk. Spec-autoritet: `cortex/docs/contracts/audit-pass-spec.md` |
 | `.gitignore` | Runtime-state ekskludert; secrets MÅ leve utenfor repo-treet |
 | `docs/ARCHITECTURE.md` | Deploy-flyt, komponent-diagram, modul-ansvar |
 | `CLAUDE.md` | Denne filen - Claude Code project-config |
