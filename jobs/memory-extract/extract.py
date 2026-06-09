@@ -329,64 +329,76 @@ class PreflightError(Exception):
     """Raised for transient pre-flight failures. Caller exits 0 (retry next cron)."""
 
 
-class PreflightShaMismatchError(PreflightError):
-    """Raised when manifest sha256 != on-disk sha256.
+def verify_manifests(raw_root: Path) -> tuple[list[Path], list[str], list[str]]:
+    """Classify every non-empty date-dir as verified / mismatched / incomplete.
 
-    Distinct from PreflightError because it is NOT transient - the manifest is
-    stale (typically after backup-restore or external file modification) and
-    will not self-heal by retrying. Caller exits 3 to escalate via run.sh
-    Telegram notify, prompting manual `reconcile-manifest.py --apply`.
+    Returns (verified, mismatched, incomplete):
+      - verified:   date-dirs whose manifest is present and every listed file's
+                    sha256 matches on disk. Safe to extract.
+      - mismatched: reasons for date-dirs with a sha256 mismatch (persistent
+                    drift - typically post-restore or an external/Syncthing edit
+                    of a raw file). SKIPPED until `reconcile-manifest.py --apply`.
+      - incomplete: reasons for date-dirs whose manifest is missing/unparseable
+                    or lists a file not present locally (capture/sync in flight).
+                    SKIPPED this run, retried next cron.
 
-    CONTRACT (do not break): this class MUST remain a subclass of PreflightError.
-    The exit-3 handling in main() catches PreflightShaMismatchError BEFORE the
-    generic PreflightError handler. If the inheritance is broken (e.g. someone
-    renames the base or moves the class), the broader PreflightError handler
-    will silently swallow sha-mismatch errors and return exit 0 - reintroducing
-    the silent-abort bug this class was created to prevent (2026-05-15 incident).
+    Graceful degradation (2026-06-09): a problem in ONE date-dir no longer aborts
+    the whole run. This previously raised on the first sha mismatch -> exit 3 ->
+    the entire extract pass skipped, so a single drifted historical file stalled
+    the pipeline for days (50h incident 2026-06-06). Now only the offending
+    date-dir is skipped; every clean dir extracts normally.
     """
-
-
-def verify_manifests(raw_root: Path) -> list[Path]:
-    """Verify every non-empty date-dir has a valid manifest. Return verified date-dirs."""
-    if not raw_root.is_dir():
-        return []
     verified: list[Path] = []
+    mismatched: list[str] = []
+    incomplete: list[str] = []
+    if not raw_root.is_dir():
+        return verified, mismatched, incomplete
     for date_dir in sorted(p for p in raw_root.iterdir() if p.is_dir()):
         md_files = sorted(date_dir.glob("*.md"))
         if not md_files:
             continue
         manifest_path = date_dir / MANIFEST_FILENAME
         if not manifest_path.exists():
-            raise PreflightError(
-                f"capture sync incomplete: missing manifest for {date_dir.name} "
+            incomplete.append(
+                f"missing manifest for {date_dir.name} "
                 f"({len(md_files)} raw-files present without manifest)"
             )
+            continue
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as e:
-            raise PreflightError(f"manifest unparseable for {date_dir.name}: {e}")
+            listed = {entry["path"]: entry["sha256"] for entry in manifest.get("sessions", [])}
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            incomplete.append(f"manifest unparseable for {date_dir.name}: {e}")
+            continue
 
-        listed = {entry["path"]: entry["sha256"] for entry in manifest.get("sessions", [])}
-        # All listed paths must exist locally and match sha256
+        # raw_root = .../8.Cortex/Memory/raw, rel_path = raw/<date>/<file>.md,
+        # so the on-disk file is raw_root.parent / rel_path.
+        problem: str | None = None
+        problem_is_mismatch = False
         for rel_path, expected_sha in listed.items():
-            local = raw_root.parent.parent / "Memory" / rel_path  # vault/8.Cortex/Memory/raw/...
-            # Actually raw_root = .../8.Cortex/Memory/raw, rel_path = raw/<date>/<file>.md
-            # So local = raw_root.parent / rel_path
             local = raw_root.parent / rel_path
             if not local.exists():
-                raise PreflightError(
-                    f"capture sync incomplete: manifest for {date_dir.name} lists "
-                    f"{rel_path} but file is not present locally"
+                problem = (
+                    f"manifest for {date_dir.name} lists {rel_path} "
+                    f"but file is not present locally"
                 )
+                break
             actual = sha256_of(local)
             if actual != expected_sha:
-                raise PreflightShaMismatchError(
+                problem = (
                     f"sha256 mismatch on {rel_path} "
                     f"(manifest={expected_sha[:8]}.., actual={actual[:8]}..). "
                     f"Run reconcile-manifest.py --apply to fix."
                 )
-        verified.append(date_dir)
-    return verified
+                problem_is_mismatch = True
+                break
+        if problem is None:
+            verified.append(date_dir)
+        elif problem_is_mismatch:
+            mismatched.append(problem)
+        else:
+            incomplete.append(problem)
+    return verified, mismatched, incomplete
 
 
 # ----- Syncthing pre-flight (secondary gate) -----
@@ -841,18 +853,22 @@ def main(argv: list[str] | None = None) -> int:
     if vocab_section:
         system_prompt = system_prompt + vocab_section
 
-    # ----- Pre-flight 1: manifest -----
-    try:
-        verified = verify_manifests(raw_root)
-    except PreflightShaMismatchError as e:
-        # Non-transient: manifest is stale (typically post-restore). Escalate to
-        # run.sh via exit 3 so Telegram notifies and operator runs reconcile.
-        print(f"preflight (manifest): {e}", file=sys.stderr)
-        return 3
-    except PreflightError as e:
-        print(f"preflight (manifest): {e}", file=sys.stderr)
-        return 0  # transient, retry next cron
-    print(f"preflight (manifest): {len(verified)} date-dirs verified", file=sys.stderr)
+    # ----- Pre-flight 1: manifest (graceful per-dir degradation) -----
+    # A problem in one date-dir skips ONLY that dir; all clean dirs still extract.
+    verified, mismatched, incomplete = verify_manifests(raw_root)
+    for reason in incomplete:
+        # Transient (capture/sync in flight) - skip quietly, retried next cron.
+        print(f"preflight (manifest): skip dir - {reason}", file=sys.stderr)
+    for reason in mismatched:
+        # Persistent drift - skip the dir but notify so the operator reconciles.
+        print(f"preflight (manifest): skip dir - {reason}", file=sys.stderr)
+        notify(f"preflight-degraded: date-dir skipped (sha mismatch) - {reason}")
+    verified_names = {d.name for d in verified}
+    print(
+        f"preflight (manifest): {len(verified)} verified, "
+        f"{len(mismatched)} sha-mismatch skipped, {len(incomplete)} incomplete skipped",
+        file=sys.stderr,
+    )
 
     # ----- Pre-flight 2: Syncthing (optional) -----
     if not args.skip_syncthing_preflight:
@@ -905,7 +921,12 @@ def main(argv: list[str] | None = None) -> int:
 
     # ----- Discover -----
     all_sessions = discover_raw_sessions(raw_root)
-    pending = [(d, s, p) for (d, s, p) in all_sessions if (d, s) not in state_set]
+    # Only sessions in manifest-verified date-dirs are eligible; sessions in
+    # skipped (mismatched/incomplete) dirs are deferred until their manifest is clean.
+    pending = [
+        (d, s, p) for (d, s, p) in all_sessions
+        if (d, s) not in state_set and d in verified_names
+    ]
     state["sessions_pending_count"] = len(pending)
     state["last_attempt_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
 

@@ -56,21 +56,29 @@ run.sh propagerer extract.py sin exit-kode:
 | 0 | OK - alle sesjoner prosessert, ingen pending, ELLER transient pre-flight-fail (manifest sync incomplete, Syncthing needFiles>0) | Logg, exit 0 stille; cron retrier neste dag |
 | 1 | Per-session prosessering-feil (LLM-feil, parse-feil); state preservert, neste cron retrier de feilede | Notify Telegram "transient", exit 1 |
 | 2 | Hard fatal (state-fil korrupt uten --force-flag, manglende system-prompt-file, mismatch state-vs-extracted) | Notify Telegram `(FATAL)`, exit 2; krever manuell intervensjon |
-| 3 | Preflight-degraded: manifest sha256 mismatch (typically post-backup-restore - manifestet er stale ift on-disk-data, retry vil feile identisk) | Notify Telegram "preflight-degraded", exit 3; krever `reconcile-manifest.py --apply` |
+| 3 | (Utgått 2026-06-09) Tidligere: manifest sha256 mismatch aborterte hele runen. Nå degraderer extract.py per-dir (se nedenfor) og returnerer 0/1 | Emitteres ikke lenger; run.sh beholder en defensiv exit-3-gren som ikke nås |
 | 124 | Timeout (`timeout 30m` killed extract.py) | Notify "TIMEOUT", behandles som transient |
 | Andre | Behandles som fatal | Notify, exit som-er |
 
-**Designvalg - preflight-fail splittet i to:**
+**Designvalg - graceful per-dir degradation (2026-06-09):**
 
-- **Transient preflight-fail** (missing manifest, missing file, Syncthing needFiles>0)
-  returnerer **exit 0 silent**. Begrunnelse: unngår Telegram-spam ved Syncthing-lag
-  (vanlig, transient situasjon - self-heals neste cron-vindu).
-- **Non-transient preflight-fail** (manifest sha256 mismatch) returnerer **exit 3** med
-  Telegram-notify. Begrunnelse: stale manifest etter backup-restore self-healer IKKE -
-  retry feiler identisk hver dag til operator kjorer `reconcile-manifest.py --apply`.
-  Skille innfort 2026-05-16 etter at 2026-05-15-vinduet aborterte stille i 18:30-cron.
+Manifest-preflight aborterer ikke lenger hele runen ved problem i én date-dir.
+`verify_manifests` klassifiserer hver date-dir som verified / mismatched / incomplete,
+og kun verifiserte date-dirs prosesseres. De øvrige hoppes over:
 
-Original exit-0-policy aksepterte foundry-sesjonen 2026-05-08; sha-mismatch-split lagt til 2026-05-16.
+- **Incomplete** (missing/unparseable manifest, missing file - capture/sync in flight):
+  hoppes stille, retries neste cron. Unngår Telegram-spam ved Syncthing-lag.
+- **Mismatched** (sha256 mismatch - persistent drift, typisk post-restore eller en
+  ekstern/Syncthing-edit av en raw-fil): date-diren hoppes over, men extract.py sender
+  en Telegram-notify ("preflight-degraded ... reconcile-manifest.py --apply") så operator
+  rydder. Diren retries hver cron til den er reconciled.
+
+Rene date-dirs prosesseres alltid, så én drivet historisk fil kan ikke lenger stoppe hele
+pipelinen (50t-utfall 2026-06-06). Exit-koden følger prosesseringen (0 ved suksess, 1 ved
+per-session-feil); **exit 3 emitteres ikke lenger**.
+
+Historikk: original exit-0-policy 2026-05-08; sha-mismatch exit-3-split 2026-05-16
+(abort hele runen); erstattet av graceful per-dir degradation 2026-06-09.
 
 ### Forventet kjøretid
 
