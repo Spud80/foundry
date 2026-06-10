@@ -1,0 +1,13 @@
+# code-only graph (docs are noise). Guide: dev-environment/docs/reference/graphify-usage.md
+*.md
+node_modules/
+**/.venv/
+.venv/
+__pycache__/
+*.pyc
+dist/
+build/
+.next/
+.expo/
+coverage/
+graphify-out/

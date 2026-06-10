@@ -24,3 +24,7 @@ jobs/*/.state.json
 
 # Claude Code local settings (per-machine)
 .claude/
+
+# Graphify: ignore the generated graph, keep the curated community labels
+graphify-out/*
+!graphify-out/.graphify_labels.json
