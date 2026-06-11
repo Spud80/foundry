@@ -674,6 +674,33 @@ def make_usage_sink(
     return sink
 
 
+class BudgetStop(Exception):
+    """Raised when `claude -p` halted on its per-call --max-budget-usd backstop
+    (subtype=error_max_budget_usd). NOT a failure: real tokens were spent (and are
+    metered before this raise), but no usable output came back. The caller defers the
+    session to the next run instead of counting it as an error - a budget stop firing is
+    expected graceful degradation, not a broken run.
+    """
+
+    def __init__(self, cost_usd: object) -> None:
+        super().__init__(f"per-call budget backstop hit (cost {cost_usd})")
+        self.cost_usd = cost_usd
+
+
+def _budget_stop_wrapper(stdout: str) -> dict | None:
+    """Return the parsed result wrapper iff stdout is the structured error_max_budget_usd
+    stop (the per-call --max-budget-usd backstop firing), else None. A budget stop exits
+    non-zero but carries a full usage wrapper - distinct from a true failure
+    (auth/oversize/api) whose stdout is empty or unparseable."""
+    try:
+        wrapper = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if isinstance(wrapper, dict) and wrapper.get("subtype") == "error_max_budget_usd":
+        return wrapper
+    return None
+
+
 def call_claude(
     raw_text: str,
     *,
@@ -729,8 +756,22 @@ def call_claude(
         )
 
     if proc.returncode != 0:
-        # Include stdout snippet: claude often surfaces the actual error there
-        # (e.g. "Prompt is too long") with empty stderr, especially on api-errors.
+        # The per-call --max-budget-usd backstop exits non-zero but returns a full
+        # result wrapper (subtype=error_max_budget_usd). That spend is real, so meter it
+        # here (same as a clean call) and raise a budget-stop the caller defers - it is
+        # NOT a failure. Metering must happen on this branch: it is the most-expensive
+        # call of all (it ran until the cap), and the generic-error raise below would
+        # otherwise drop exactly it from the ledger.
+        budget_wrapper = _budget_stop_wrapper(proc.stdout)
+        if budget_wrapper is not None:
+            if usage_sink is not None:
+                try:
+                    usage_sink(budget_wrapper)
+                except Exception as e:  # noqa: BLE001 - metering must never mask the stop
+                    print(f"  WARN: usage-spool write failed: {e}", file=sys.stderr)
+            raise BudgetStop(budget_wrapper.get("total_cost_usd"))
+        # True failure: stdout often surfaces the actual error (e.g. "Prompt is too
+        # long") with empty stderr, especially on api-errors.
         raise RuntimeError(
             f"claude exit {proc.returncode}: "
             f"stderr={proc.stderr[:300]!r} stdout={proc.stdout[:300]!r}"
@@ -1037,6 +1078,7 @@ def main(argv: list[str] | None = None) -> int:
     # ----- Process loop -----
     total_written = 0
     last_error = None
+    budget_skipped: list[tuple[str, str]] = []
     for date, sid, raw_path in pending:
         if args.verbose:
             print(f"  process: {date}/{sid}", file=sys.stderr)
@@ -1059,6 +1101,18 @@ def main(argv: list[str] | None = None) -> int:
             state["last_attempt_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
             save_state(state_path, state)
             return 2
+        except BudgetStop as e:
+            # The per-call budget backstop fired: spend is metered (in call_claude), but
+            # no output was produced. Defer, do not fail - the session stays pending
+            # (state untouched) and is retried next run, and the run does not error on it.
+            # Conflating this graceful stop with a true error is what tripped the
+            # memory-state alarm on an otherwise-successful run.
+            budget_skipped.append((date, sid))
+            print(
+                f"  budget-skip: {date}/{sid} deferred (cost {e.cost_usd}); retry next run",
+                file=sys.stderr,
+            )
+            continue
         except Exception as e:  # noqa: BLE001
             last_error = f"{date}/{sid}: {e}"
             print(f"  ERROR: {last_error}", file=sys.stderr)
@@ -1093,9 +1147,20 @@ def main(argv: list[str] | None = None) -> int:
     if not args.dry_run:
         save_state(state_path, state)
 
+    # Budget-skips are deferrals, not failures (they do not set last_error or exit 1), but
+    # a persistent skip means a single compile no longer fits the per-call cap - surface it
+    # once per run so the operator can raise the cap rather than let the backlog grow silently.
+    if budget_skipped:
+        notify(
+            f"budget-skip: {len(budget_skipped)} session(s) hit the per-call "
+            f"--max-budget-usd cap ({args.max_budget_usd}) and were deferred; spend was "
+            f"metered, sessions retry next run. Raise the per-call cap if this persists."
+        )
+
     print(
         f"extract: processed={len(pending)} entries-written={total_written} "
         f"errors={'1+' if last_error else '0'} "
+        f"budget-skipped={len(budget_skipped)} "
         f"produced_output={state['last_run_produced_output']}",
         file=sys.stderr,
     )
