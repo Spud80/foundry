@@ -22,6 +22,9 @@ extract-ownership; Runde 6 manifest-handshake):
   blocks to `extracted/<type>-YYYY-QN.md`. Quarter-file auto-created from
   template if missing. State-fil updated atomically per processed session
   (mid-batch-crash safe).
+- Per claude call: one usage record (raw wrapper subset) appended to the
+  invoker-designated JSONL spool for fleet-control-plane metering
+  (`EXTRACT_USAGE_DIR` + `EXTRACT_RUN_CORRELATION`; disabled when unset).
 
 Authoritative file format spec:
 `cortex/docs/contracts/memory-knowledge-contract.md`.
@@ -40,6 +43,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -587,6 +591,89 @@ def _strip_md_json_fence(text: str) -> str:
     return s
 
 
+# ----- Usage spool (fleet-control-plane metering) -----
+#
+# Whoever makes the claude call captures the usage: extract.py appends one
+# JSONL record per `claude -p` call to a spool file the invoker designates.
+# The record carries the RAW wrapper usage-subset - ledger normalisation is
+# the control-plane's job (it owns ledger semantics), not cortex's. With the
+# env contract absent the spool is disabled and extract.py runs standalone.
+
+_CORRELATION_SAFE_RE = re.compile(r"[A-Za-z0-9._-]+")
+USAGE_WRAPPER_FIELDS = ("modelUsage", "total_cost_usd", "subtype", "is_error")
+
+
+def usage_spool_target() -> tuple[Path, str] | None:
+    """Resolve spool destination from env, or None when disabled.
+
+    EXTRACT_USAGE_DIR (spool directory) + EXTRACT_RUN_CORRELATION (run-level
+    correlation id, filename-safe) are injected by the invoker (foundry
+    run.sh / control-plane lane). Either absent/empty -> disabled.
+    """
+    spool_dir = os.environ.get("EXTRACT_USAGE_DIR", "").strip()
+    correlation = os.environ.get("EXTRACT_RUN_CORRELATION", "").strip()
+    if not spool_dir or not correlation:
+        return None
+    if not _CORRELATION_SAFE_RE.fullmatch(correlation):
+        print(
+            f"  WARN: EXTRACT_RUN_CORRELATION {correlation!r} is not filename-safe; "
+            "usage-spool disabled for this run",
+            file=sys.stderr,
+        )
+        return None
+    return Path(spool_dir), correlation
+
+
+def append_usage_record(
+    spool_dir: Path,
+    correlation: str,
+    *,
+    date: str,
+    session_id: str,
+    model: str,
+    wrapper: dict,
+) -> None:
+    """Append one usage record (JSONL line) for a single claude call.
+
+    Per-call correlation is `<run-correlation>#<session-id>` - the dedup key
+    the control-plane ledger uses, so re-ingesting the same spool file never
+    double-counts. One O_APPEND line-write per call; records are small enough
+    that a torn write is not a practical concern, and the ledger side
+    tolerates a trailing partial line.
+    """
+    record: dict = {
+        "correlation": f"{correlation}#{session_id}",
+        "date": date,
+        "session_id": session_id,
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "model_requested": model,
+    }
+    for key in USAGE_WRAPPER_FIELDS:
+        if key in wrapper:
+            record[key] = wrapper[key]
+    spool_dir.mkdir(parents=True, exist_ok=True)
+    with open(spool_dir / f"{correlation}.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def make_usage_sink(
+    *, date: str, session_id: str, model: str
+) -> Callable[[dict], None] | None:
+    """Build a per-session usage sink for call_claude, or None when disabled."""
+    spool = usage_spool_target()
+    if spool is None:
+        return None
+    spool_dir, correlation = spool
+
+    def sink(wrapper: dict) -> None:
+        append_usage_record(
+            spool_dir, correlation,
+            date=date, session_id=session_id, model=model, wrapper=wrapper,
+        )
+
+    return sink
+
+
 def call_claude(
     raw_text: str,
     *,
@@ -594,6 +681,7 @@ def call_claude(
     system_prompt: str,
     max_budget_usd: float | None,
     fallback_model: str | None,
+    usage_sink: Callable[[dict], None] | None = None,
 ) -> dict:
     """Invoke `claude -p` headless with structured output. Return parsed JSON."""
     # No --bare: would disable OAuth/keychain auth (incl. CLAUDE_CODE_OAUTH_TOKEN
@@ -657,6 +745,15 @@ def call_claude(
         wrapper = json.loads(proc.stdout)
     except json.JSONDecodeError as e:
         raise RuntimeError(f"claude stdout not JSON: {e}; raw[:200]={proc.stdout[:200]}")
+    # Emit usage BEFORE structured-output extraction: even a response whose
+    # payload turns out unusable has spent real tokens and must be metered.
+    if isinstance(wrapper, dict) and usage_sink is not None:
+        try:
+            usage_sink(wrapper)
+        except Exception as e:
+            # Metering must never kill extraction; under-metering is visible in
+            # the log and bounded by the invoker's budget reservation.
+            print(f"  WARN: usage-spool write failed: {e}", file=sys.stderr)
     if isinstance(wrapper, dict) and isinstance(wrapper.get("structured_output"), dict):
         return wrapper["structured_output"]
     if isinstance(wrapper, dict) and "result" in wrapper:
@@ -754,6 +851,7 @@ def process_session(
         system_prompt=system_prompt,
         max_budget_usd=args.max_budget_usd,
         fallback_model=args.fallback_model,
+        usage_sink=make_usage_sink(date=date, session_id=session_id, model=args.model),
     )
     entries = response.get("entries", [])
     written = 0

@@ -12,6 +12,12 @@ droppet (compile-pass eier sources i v2), `_aliases.py` + `_paths.py` lagt til s
 `_source_append.py` fjernet. Harness-tag-sanitizer (opprinnelig laget i denne foundry-kopien) er
 back-portet til cortex-master og fulgte med reimporten - ingen sikkerhets-regresjon.
 
+**Status (usage-spool-reimport 2026-06-11):** extract.py reimportert fra `cortex/scripts/memory/`
+(commit `2f13813`): usage-spool for fleet/control-plane-metering (én JSONL-record per claude-kall
+når `EXTRACT_USAGE_DIR` + `EXTRACT_RUN_CORRELATION` er satt; no-op ellers). run.sh fikk samtidig
+CP-dispatch-kontrakten (`--cp-*` argv, se egen seksjon) og HOME-uavhengighet (USER_HOME fra passwd,
+LOG_FILE fra REPO_ROOT) så den kan invokeres via `sudo runuser -u claude --` uten login-shell.
+
 **Filformat-autoritet:** `cortex/docs/contracts/memory-knowledge-contract.md`
 ([GitHub](https://github.com/Spud80/cortex/blob/dev/docs/contracts/memory-knowledge-contract.md))
 eier raw/-format, manifest-format, og extracted/-format inkludert `schema_version`. Foundry
@@ -42,10 +48,35 @@ run.sh source'er `~/.config/foundry/secrets.env` (set -a) og eksporterer i tille
 | Variabel | Kilde | Påkrevd? | Bruk |
 |----------|-------|----------|------|
 | `CLAUDE_CODE_OAUTH_TOKEN` | secrets.env | Ja | Authorization for `claude -p`-kall |
-| `OBSIDIAN_VAULT_ROOT` | run.sh (default `${HOME}/vault/My Vault`) | Nei (script har default, men foundry-default = filehub-path - så **må** settes på foundry) | Base-sti for raw/ + extracted/ + state-fil |
+| `OBSIDIAN_VAULT_ROOT` | run.sh (default `${USER_HOME}/vault/My Vault`) | Nei (script har default, men foundry-default = filehub-path - så **må** settes på foundry) | Base-sti for raw/ + extracted/ + state-fil |
 | `SYNCTHING_API_KEY` | secrets.env | Nei | Aktiverer sekundær Syncthing-pre-flight; soft-skip hvis fraværende |
+| `EXTRACT_USAGE_DIR` | run.sh (spool-katalogen, når den finnes og er skrivbar) | Nei | Usage-spool: én JSONL-record per claude-kall for CP-metering; no-op når fraværende |
+| `EXTRACT_RUN_CORRELATION` | run.sh (`--cp-correlation` eller cron-mintet) | Nei | Run-correlation; per-kall-nøkkel blir `<run>#<session-id>` (CP-ledger-dedup) |
 
 extract.py må IKKE kreve andre env-vars uten å oppdatere denne kontrakten først.
+
+### CLI-args (run.sh → extract.py)
+
+run.sh tråder `--limit <N>` og `--max-budget-usd <X>` videre til extract.py når de er
+injisert via `--cp-limit` / `--cp-max-budget-usd` (CP-dispatch). Uten CP-args kjører
+extract.py som før (ingen limit, ingen per-kall-cap).
+
+### CP-dispatch-kontrakt (fleet/control-plane delegated-headless)
+
+CP invokerer run.sh direkte (`sudo runuser -u claude -- .../run.sh`) med argv - ikke env,
+siden env ikke overlever sudo/runuser-grensen uten env_keep:
+
+| Arg | Påkrevd? | Bruk |
+|-----|----------|------|
+| `--cp-correlation <id>` | Nei | Run-correlation fra CP. Fraværende -> cron-modus: run.sh minter `cron-<dato>-<hex>` så fallback-dager også metres |
+| `--cp-usage-dir <dir>` | Nei | Spool-katalog (default `/var/lib/control-plane/usage-spool/memory-extract`). Finnes ikke / ikke skrivbar -> metering deaktivert denne runen (logget, aldri fatal) |
+| `--cp-limit <N>` | Nei | Maks sesjoner per run (trådes til extract.py `--limit`) |
+| `--cp-max-budget-usd <X>` | Nei | Per-kall-cap (trådes til extract.py `--max-budget-usd`) |
+
+Ukjent argument -> exit 2 (FATAL, defensiv misconfig-guard). Spool-eierskap: claude-siden
+(run.sh) pruner `*.jsonl` eldre enn 14 dager; CP sweeper kun (idempotent) og sletter aldri.
+Exit-kodene under gjelder uendret i begge moduser; CP-lanen behandler enhver non-zero som
+feil og metrer uansett fra spoolen (settle-actual).
 
 ### Exit-code-semantikk
 
