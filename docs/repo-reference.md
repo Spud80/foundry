@@ -16,7 +16,7 @@ Detaljert repo-map, arkitektur-beslutninger og fil-roller. Flyttet fra `CLAUDE.m
 | `bootstrap/logrotate.foundry` | exists | weekly × 12 rotate for ~/foundry/logs/ |
 | `cron.d/` | exists | Crontab-fragmenter: auto-update (`10,25,40,55 * * * *`), drain-queue (`*/5`), memory-extract (`30 18`), fallback-classifier (`0 3`), audit (`0 4`), capture-heartbeat (`0 19`), token-expiry-check (`0 9`) |
 | `_shared/` | exists | notify-core.sh + notify.sh + drain-queue.sh + token-expiry-check.sh + capture-heartbeat.sh |
-| `jobs/memory-extract/` | exists (Phase 600+700+800) | Phase E memory-extract: run.sh + CONTRACT.md + extract.py (LLM-classify + aliases-consumption aliases-normalisering + Sources-append) |
+| `jobs/memory-extract/` | exists (Phase 600+700+800) | Phase E memory-extract: run.sh + CONTRACT.md + extract.py (LLM-classify + aliases-consumption aliases-normalisering + Sources-append) + reconcile-manifest.py (operator-recovery: manifest sha256-reconcile, vendret fra cortex) |
 | `jobs/fallback-classifier/` | exists (Phase 900) | Foundry-fallback classifier for `pending-foundry-*.md`: run.sh + CONTRACT.md + system-prompt.md + classify.py + smoke-test. Atomic mutate-first-then-rename + 4-state recovery-scan |
 | `jobs/audit/` | exists (Phase 1000) | Nattlig audit-pass per `cortex/docs/contracts/audit-pass-spec.md`: run.sh + CONTRACT.md + system-prompt.md + audit.py + smoke-test. 6 audit-sjekker, tiered Telegram, rapport-fil til `5.Utility/Pipeline/Audit-Reports/YYYY-MM-DD.md`, heartbeat-state `~/.audit-state.json` |
 | `.github/workflows/smoke-test.yml` | exists | CI: shellcheck + cron-syntax + deploy-dry-run + notify-paritet |

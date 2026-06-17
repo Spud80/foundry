@@ -108,6 +108,21 @@ Rene date-dirs prosesseres alltid, så én drivet historisk fil kan ikke lenger 
 pipelinen (50t-utfall 2026-06-06). Exit-koden følger prosesseringen (0 ved suksess, 1 ved
 per-session-feil); **exit 3 emitteres ikke lenger**.
 
+**Reconcile-verktøy:** `jobs/memory-extract/reconcile-manifest.py` (vendret fra
+`cortex/scripts/memory/reconcile-manifest.py`; selvstendig - kun stdlib, ingen lokale
+imports). Operator kjører det på foundry-CT etter en mismatched-notify:
+
+```bash
+~/foundry/jobs/memory-extract/.venv/bin/python \
+  ~/foundry/jobs/memory-extract/reconcile-manifest.py \
+  --vault-root "$HOME/vault/My Vault" --date <YYYY-MM-DD> --apply \
+  --lock-file "$HOME/foundry/.deploy.lock"
+```
+
+`--lock-file` tar foundry deploy-locken for å unngå race mot cron-jobbene; `--date`
+begrenser til den drevne date-diren (utelat for full-vault scan; dry-run er default uten
+`--apply`).
+
 Historikk: original exit-0-policy 2026-05-08; sha-mismatch exit-3-split 2026-05-16
 (abort hele runen); erstattet av graceful per-dir degradation 2026-06-09.
 
