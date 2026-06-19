@@ -59,7 +59,9 @@ extract.py må IKKE kreve andre env-vars uten å oppdatere denne kontrakten før
 
 run.sh tråder `--limit <N>` og `--max-budget-usd <X>` videre til extract.py når de er
 injisert via `--cp-limit` / `--cp-max-budget-usd` (CP-dispatch). Uten CP-args kjører
-extract.py som før (ingen limit, ingen per-kall-cap).
+extract.py som før (ingen limit, ingen per-kall-cap). Unntak: `--backlog-alert-threshold`
+har en stående default på 50 i run.sh, så backlog-dybde-alarmen er aktiv også i cron-modus
+(overstyres av `--cp-backlog-threshold` eller env `CP_BACKLOG_THRESHOLD`; tom verdi = av).
 
 ### CP-dispatch-kontrakt (fleet/control-plane delegated-headless)
 
@@ -72,6 +74,7 @@ siden env ikke overlever sudo/runuser-grensen uten env_keep:
 | `--cp-usage-dir <dir>` | Nei | Spool-katalog (default `/var/lib/control-plane/usage-spool/memory-extract`). Finnes ikke / ikke skrivbar -> metering deaktivert denne runen (logget, aldri fatal) |
 | `--cp-limit <N>` | Nei | Maks sesjoner per run (trådes til extract.py `--limit`) |
 | `--cp-max-budget-usd <X>` | Nei | Per-kall-cap (trådes til extract.py `--max-budget-usd`) |
+| `--cp-backlog-threshold <N>` | Nei | Backlog-dybde-terskel (trådes til extract.py `--backlog-alert-threshold`). Default 50 i run.sh selv uten CP-args; tom verdi skrur alarmen av |
 
 Ukjent argument -> exit 2 (FATAL, defensiv misconfig-guard). Spool-eierskap: claude-siden
 (run.sh) pruner `*.jsonl` eldre enn 14 dager; CP sweeper kun (idempotent) og sletter aldri.

@@ -47,6 +47,11 @@ CP_CORRELATION=""
 CP_USAGE_DIR="${CP_USAGE_SPOOL_DIR:-/var/lib/control-plane/usage-spool/memory-extract}"
 CP_LIMIT=""
 CP_MAX_BUDGET_USD=""
+# Backlog-depth-alarm: default 50 (extract.py fyrer NOTIFY hvis >50 okter star
+# igjen etter en kjoring - inflow slar gjennomstromning). CP-dispatch kan overstyre
+# via --cp-backlog-threshold (samme mekanisme som --cp-limit); env CP_BACKLOG_THRESHOLD
+# eller tom verdi skrur alarmen av.
+CP_BACKLOG_THRESHOLD="${CP_BACKLOG_THRESHOLD:-50}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -54,6 +59,7 @@ while [ $# -gt 0 ]; do
     --cp-usage-dir)      CP_USAGE_DIR="${2:?--cp-usage-dir needs a value}"; shift 2 ;;
     --cp-limit)          CP_LIMIT="${2:?--cp-limit needs a value}"; shift 2 ;;
     --cp-max-budget-usd) CP_MAX_BUDGET_USD="${2:?--cp-max-budget-usd needs a value}"; shift 2 ;;
+    --cp-backlog-threshold) CP_BACKLOG_THRESHOLD="${2:?--cp-backlog-threshold needs a value}"; shift 2 ;;
     *)
       printf 'FATAL: unknown argument %s\n' "$1" >&2
       exit 2
@@ -155,6 +161,9 @@ if [ -n "$CP_LIMIT" ]; then
 fi
 if [ -n "$CP_MAX_BUDGET_USD" ]; then
   EXTRACT_ARGS+=(--max-budget-usd "$CP_MAX_BUDGET_USD")
+fi
+if [ -n "$CP_BACKLOG_THRESHOLD" ]; then
+  EXTRACT_ARGS+=(--backlog-alert-threshold "$CP_BACKLOG_THRESHOLD")
 fi
 
 # === Steg 5: kjor extract.py med timeout ===

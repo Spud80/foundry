@@ -949,6 +949,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="Ignore missing/corrupt state, process all raw-files (escape hatch)")
     parser.add_argument("--limit", type=int, default=None,
                         help="Process at most N sessions (smoke-test / cost-limited runs)")
+    parser.add_argument("--backlog-alert-threshold", type=int, default=None,
+                        help="If sessions still pending after this run exceeds N, emit a "
+                             "backlog-depth NOTIFY (inflow outpacing throughput). Off if unset.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Discover + pre-flight, no claude calls, no state writes")
     parser.add_argument("--verbose", "-v", action="store_true")
@@ -1155,6 +1158,22 @@ def main(argv: list[str] | None = None) -> int:
             f"budget-skip: {len(budget_skipped)} session(s) hit the per-call "
             f"--max-budget-usd cap ({args.max_budget_usd}) and were deferred; spend was "
             f"metered, sessions retry next run. Raise the per-call cap if this persists."
+        )
+
+    # Backlog-depth alert: even after processing this run, more than the threshold
+    # remains pending - inflow is outpacing throughput and the queue will not drain
+    # on the daily cadence. state["sessions_pending_count"] is the true remainder
+    # (total discovered minus sessions marked done this run). Skipped under --dry-run,
+    # where nothing is decremented and the count always == total (false positive).
+    remaining = state["sessions_pending_count"]
+    if (args.backlog_alert_threshold is not None
+            and not args.dry_run
+            and remaining > args.backlog_alert_threshold):
+        notify(
+            f"backlog-depth: {remaining} session(s) still pending after run "
+            f"(processed {len(pending)}, limit {args.limit}, "
+            f"threshold {args.backlog_alert_threshold}). Inflow is outpacing "
+            f"throughput - raise --limit or run a one-off burndown."
         )
 
     print(
