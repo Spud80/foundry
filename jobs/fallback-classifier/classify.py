@@ -45,7 +45,11 @@ HARD_REQUIRED = [
     "processing_state", "pre_classified",
 ]
 
-CAPTURE_ENUM = {"idea", "quote", "book", "movie", "tv_series", "podcast", "person", "note"}
+# `reference` is Quick-Capture/audio-only (mobile/web thought-pipeline), added
+# as the 9th capture value in capture-vocabulary.md 2026-06-25. /save never emits
+# it, but the fallback also re-classifies mobile/web Gemini-failures, which can be
+# reference - so accept it rather than forcing a wrong type.
+CAPTURE_ENUM = {"idea", "quote", "book", "movie", "tv_series", "podcast", "person", "reference", "note"}
 INTENT_ENUM = {"followup", "reminder", "someday", "question", "decision", None}
 STATUS_ENUM = {"active", "snoozed", "superseded", "done", "archived"}
 

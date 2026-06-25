@@ -39,7 +39,10 @@ SYSTEM_PROMPT_PATH = JOB_DIR / "system-prompt.md"
 RUNNER_VERSION = "1.0.0"
 RUNNER_SCHEMA_VERSION = 1
 
-CAPTURE_ENUM = {"idea", "quote", "book", "movie", "tv_series", "podcast", "person", "note"}
+# `reference` is Quick-Capture/audio-only (mobile/web thought-pipeline), added
+# as the 9th capture value in capture-vocabulary.md 2026-06-25. /save never emits
+# it; included here so the audit does not flag thought-pipeline reference entries.
+CAPTURE_ENUM = {"idea", "quote", "book", "movie", "tv_series", "podcast", "person", "reference", "note"}
 INTENT_ENUM = {"followup", "reminder", "someday", "question", "decision", None}
 STATUS_ENUM = {"active", "snoozed", "superseded", "done", "archived"}
 
