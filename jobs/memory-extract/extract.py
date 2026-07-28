@@ -114,6 +114,80 @@ DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 VALID_MODALS = ("actionable", "speculative", "question")
 
 
+def _kebab(value: str) -> str:
+    """Best-effort kebab-case: camelCase boundaries become hyphens, separators
+    collapse, everything outside [a-z0-9-] is dropped. Returns "" when nothing
+    usable remains - the caller keeps the original and lets validation reject it.
+    """
+    s = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "-", value)
+    s = re.sub(r"[\s_.]+", "-", s).lower()
+    s = re.sub(r"[^a-z0-9-]", "", s)
+    s = re.sub(r"-{2,}", "-", s).strip("-")
+    return s
+
+
+def normalize_entry(entry: dict) -> list[str]:
+    """Repair deterministically-fixable deviations in-place; return a list of
+    human-readable repairs (empty when nothing was touched).
+
+    The model occasionally emits camelCase slugs and topics ("topicsToResearch-x")
+    that validate_entry rejects. Dropping those entries loses real content for a
+    formatting slip we can fix without asking anyone, so normalize first and let
+    validation judge the result. Only shape is repaired, never meaning: a slug
+    that normalizes to nothing is left alone and fails validation as before.
+    """
+    repairs: list[str] = []
+    slug = entry.get("slug")
+    if isinstance(slug, str) and not SLUG_RE.match(slug):
+        fixed = _kebab(slug)
+        if fixed and SLUG_RE.match(fixed):
+            entry["slug"] = fixed
+            repairs.append(f"slug {slug!r} -> {fixed!r}")
+    topics = entry.get("topics")
+    if isinstance(topics, list):
+        for i, tag in enumerate(topics):
+            if not isinstance(tag, str) or TOPIC_RE.match(tag):
+                continue
+            fixed = "¤" + _kebab(tag.lstrip("¤#"))
+            if TOPIC_RE.match(fixed):
+                topics[i] = fixed
+                repairs.append(f"topics[{i}] {tag!r} -> {fixed!r}")
+    return repairs
+
+
+def quarantine_entry(
+    extracted_dir: Path,
+    *,
+    date: str,
+    session_id: str,
+    entry: dict,
+    violations: list[str],
+) -> Path:
+    """Append a rejected entry to extracted/.rejected/<date>-<session>.json.
+
+    An entry that survives normalization but still violates the contract must not
+    disappear silently - the session is marked processed either way, so a dropped
+    entry would be unrecoverable without re-running the whole pipeline. The
+    quarantine file holds the raw entry, so a replay needs no new model call.
+    """
+    rejected_dir = extracted_dir / ".rejected"
+    rejected_dir.mkdir(parents=True, exist_ok=True)
+    target = rejected_dir / f"{date}-{session_id}.json"
+    records = []
+    if target.exists():
+        try:
+            records = json.loads(target.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            records = []
+    records.append({
+        "rejected_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "violations": violations,
+        "entry": entry,
+    })
+    atomic_write(target, json.dumps(records, ensure_ascii=False, indent=2) + "\n")
+    return target
+
+
 def validate_entry(entry: dict) -> list[str]:
     """Return a list of constraint violations for a single entry. Empty list
     means the entry passes Python-side validation. Caller skips the entry and
@@ -869,8 +943,8 @@ def process_session(
     alias_map: dict[str, str],
     system_prompt: str,
     args: argparse.Namespace,
-) -> int:
-    """Returns number of entries written for this session.
+) -> tuple[int, int]:
+    """Returns (entries written, entries quarantined) for this session.
 
     aliases-consumption (alias-resolution): every tag in entry['topics'] is mapped through
     alias_map BEFORE the heading-block is formatted. Tags absent from the map
@@ -885,7 +959,7 @@ def process_session(
     raw_text = sanitize_harness_tags(raw_text)  # strip prompt-injection vectors
     if args.dry_run:
         print(f"  [dry-run] would call claude for {date}/{session_id}", file=sys.stderr)
-        return 0
+        return 0, 0
     response = call_claude(
         raw_text,
         model=args.model,
@@ -896,6 +970,7 @@ def process_session(
     )
     entries = response.get("entries", [])
     written = 0
+    rejected = 0
     # Per-session batching: collect blocks per target, flush once at end of session.
     # Cuts atomic_write count from N entries to M unique target files (typically 1-3),
     # shrinking the Syncthing race-window between writes against the same file.
@@ -905,9 +980,24 @@ def process_session(
         if entry.get("type") == "intent" and not entry.get("modal"):
             print(f"  WARN: intent entry without modal in {session_id}, defaulting to speculative", file=sys.stderr)
             entry["modal"] = "speculative"
+        repairs = normalize_entry(entry)
+        if repairs:
+            print(f"  repaired entry {idx} in {session_id}: {'; '.join(repairs)}", file=sys.stderr)
         violations = validate_entry(entry)
         if violations:
-            print(f"  WARN: skipping entry {idx} in {session_id}: {'; '.join(violations)}", file=sys.stderr)
+            target = quarantine_entry(
+                extracted_dir,
+                date=date,
+                session_id=session_id,
+                entry=entry,
+                violations=violations,
+            )
+            print(
+                f"  WARN: quarantined entry {idx} in {session_id}: {'; '.join(violations)} "
+                f"-> {target.name}",
+                file=sys.stderr,
+            )
+            rejected += 1
             continue
         # aliases-consumption: alias-resolve topics in-place (safety-net for LLM not following vocab hint)
         if alias_map:
@@ -920,7 +1010,7 @@ def process_session(
     # Flush batched blocks - one atomic_write per target instead of one per entry
     for target, blocks in blocks_by_target.items():
         append_blocks(target, blocks)
-    return written
+    return written, rejected
 
 
 # ----- Main orchestration -----
@@ -1080,13 +1170,14 @@ def main(argv: list[str] | None = None) -> int:
 
     # ----- Process loop -----
     total_written = 0
+    total_rejected = 0
     last_error = None
     budget_skipped: list[tuple[str, str]] = []
     for date, sid, raw_path in pending:
         if args.verbose:
             print(f"  process: {date}/{sid}", file=sys.stderr)
         try:
-            n = process_session(
+            n, rejected = process_session(
                 raw_path,
                 date=date,
                 session_id=sid,
@@ -1135,6 +1226,7 @@ def main(argv: list[str] | None = None) -> int:
             state["last_error"] = None
             save_state(state_path, state)  # atomic per session
         total_written += n
+        total_rejected += rejected
         if args.verbose:
             print(f"    wrote {n} entries", file=sys.stderr)
 
@@ -1176,10 +1268,22 @@ def main(argv: list[str] | None = None) -> int:
             f"throughput - raise --limit or run a one-off burndown."
         )
 
+    # Quarantined entries are content the pipeline could not write but did not lose:
+    # the session is marked processed regardless, so silence here would mean the
+    # operator never learns that something needs a replay from extracted/.rejected/.
+    if total_rejected:
+        notify(
+            f"rejected-entries: {total_rejected} entry/entries failed validation after "
+            f"normalization and were quarantined in extracted/.rejected/. The sessions "
+            f"are marked processed - replay from the quarantine files, they hold the raw "
+            f"entries and need no new model call."
+        )
+
     print(
         f"extract: processed={len(pending)} entries-written={total_written} "
         f"errors={'1+' if last_error else '0'} "
         f"budget-skipped={len(budget_skipped)} "
+        f"rejected={total_rejected} "
         f"produced_output={state['last_run_produced_output']}",
         file=sys.stderr,
     )

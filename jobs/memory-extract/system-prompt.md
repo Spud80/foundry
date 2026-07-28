@@ -46,8 +46,8 @@ Return ONLY a JSON object matching this shape:
 Field rules:
 
 - `type`: lowercase, one of the six.
-- `slug`: 2-5 words, kebab-case, summarizes the entry. Becomes the H2 heading suffix.
-- `topics`: 1-3 strings, each prefixed with `¤` (U+00A4) and kebab-case. Use topics that match the actual subject domain. Read the transcript and pick descriptive tags - don't invent generic tags like `¤misc`.
+- `slug`: 2-5 words, kebab-case, summarizes the entry. Becomes the H2 heading suffix. Strictly `^[a-z0-9][a-z0-9-]*$`: lowercase only, words separated by hyphens, no camelCase, no underscores, no spaces. Write `topics-to-research-atomic-claim`, never `topicsToResearch-atomic-claim`.
+- `topics`: 1-3 strings, each prefixed with `¤` (U+00A4) and kebab-case, matching `^¤[a-z0-9-]+$` - the same lowercase-and-hyphens rule as `slug`. Use topics that match the actual subject domain. Read the transcript and pick descriptive tags - don't invent generic tags like `¤misc`.
 - `modal`: REQUIRED when `type == "intent"`, OMIT for all other types. Distinguishes whether the intent is concrete (`actionable`), speculative idea (`speculative`), or open question (`question`).
 - `body`: 1-5 paragraphs of markdown. Write for the future reader who has not seen the original transcript. Include enough context to be useful as a standalone artifact. Skip implementation noise. Reference key decisions, rationale, and outcomes.
 - `date`: ISO date that this insight properly belongs to. Usually matches the transcript's session date (frontmatter `date:` field). For sessions spanning multiple days, use the date the relevant work happened.
