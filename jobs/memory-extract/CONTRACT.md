@@ -94,6 +94,21 @@ run.sh propagerer extract.py sin exit-kode:
 | 124 | Timeout (`timeout 30m` killed extract.py) | Notify "TIMEOUT", behandles som transient |
 | Andre | Behandles som fatal | Notify, exit som-er |
 
+**Designvalg - normaliser-så-karantene for entries (2026-07-28, cortex `0d8cc5d`):**
+
+En entry som feiler `validate_entry` ble tidligere hoppet over med en WARN mens sesjonen
+likevel ble markert behandlet - innholdet var uopprettelig og ingenting varslet. Nå:
+
+1. `normalize_entry` reparerer form som kan repareres deterministisk (camelCase-slug og
+   -topics, manglende `¤`-prefiks) FØR validering.
+2. Det som fortsatt bryter kontrakten skrives til `extracted/.rejected/<dato>-<sesjon>.json`
+   med avviksliste og hele entryen - en replay krever derfor ikke et nytt LLM-kall.
+3. `rejected=N` inngår i summeringslinja, og N > 0 utløser en `rejected-entries`-NOTIFY.
+
+Sesjonen markeres fortsatt som behandlet. Lot vi den stå pending ville en deterministisk
+valideringsfeil gi evig retry og duplisere de entryene som faktisk ble skrevet; karantene
+pluss alarm gir «ingenting går tapt» uten den prisen. Exit-koden påvirkes ikke.
+
 **Designvalg - graceful per-dir degradation (2026-06-09):**
 
 Manifest-preflight aborterer ikke lenger hele runen ved problem i én date-dir.
