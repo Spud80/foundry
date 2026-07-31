@@ -18,6 +18,14 @@ når `EXTRACT_USAGE_DIR` + `EXTRACT_RUN_CORRELATION` er satt; no-op ellers). run
 CP-dispatch-kontrakten (`--cp-*` argv, se egen seksjon) og HOME-uavhengighet (USER_HOME fra passwd,
 LOG_FILE fra REPO_ROOT) så den kan invokeres via `sudo runuser -u claude --` uten login-shell.
 
+**Status (kvalitetsbar-reimport 2026-07-31):** extract.py + system-prompt.md reimportert fra
+`cortex/scripts/memory/`, og `_extracted_entries.py` lagt til som ny vendret dep. Innhold:
+strammet `pattern`-definisjon, proveniens-test og gjenfortellings-varsel i kvalitetsbaren,
+valgfritt `supersedes`-felt (additivt - `extracted/` står fortsatt på `schema_version: 1`), og
+injeksjon av eksisterende entry-slugs for sesjonens prosjekt i system-prompten. Ingen drift fra
+foundry-siden å back-porte først: de vendrede kopiene var byte-identiske med cortex HEAD.
+Ontologien er uendret - de samme seks entry-typene fanges som før.
+
 **Filformat-autoritet:** `cortex/docs/contracts/memory-knowledge-contract.md`
 ([GitHub](https://github.com/Spud80/cortex/blob/dev/docs/contracts/memory-knowledge-contract.md))
 eier raw/-format, manifest-format, og extracted/-format inkludert `schema_version`. Foundry
@@ -29,9 +37,10 @@ Følgende filer importeres til `~/foundry/jobs/memory-extract/` på CT:
 
 | Fil | Type | Eier | Beskrivelse |
 |-----|------|------|-------------|
-| `extract.py` | Python 3.11+ | obsidian-memory | LLM-klassifisering av raw → typed extracted-entries; importerer `_aliases` + `_paths` (vendret ved siden av) |
+| `extract.py` | Python 3.11+ | obsidian-memory | LLM-klassifisering av raw → typed extracted-entries; importerer `_aliases` + `_paths` + `_extracted_entries` (vendret ved siden av) |
 | `_aliases.py` | Python 3.11+ | obsidian-memory | `load_aliases` + `AliasesError` (aliases.yaml-parsing for topic-normalisering); vendret dep for extract.py |
 | `_paths.py` | Python 3.11+ | obsidian-memory | `resolve_vault_root` (CLI > env > platform-default); vendret dep for extract.py |
+| `_extracted_entries.py` | Python 3.11+ | obsidian-memory | Parse-laget for `extracted/`; vendret dep for extract.py sin slug-injeksjon. Importeres lat - mangler den, degraderer injeksjonen stille til tom, så et glemt filkopi gir ingen feil, bare en feature som ikke virker i prod |
 | `system-prompt.md` | Markdown | obsidian-memory | `--system-prompt`-content for `claude -p` (override av default Claude Code system prompt) |
 | `requirements.txt` | Python deps | obsidian-memory | `requests>=2.31.0` (kun for optional Syncthing REST-pre-flight); deploy.sh setter opp `.venv/` |
 

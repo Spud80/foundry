@@ -101,6 +101,12 @@ OUTPUT_JSON_SCHEMA = {
                     "modal": {"type": "string"},
                     "body": {"type": "string"},
                     "date": {"type": "string"},
+                    # Optional, additive: the slug of an earlier entry this one
+                    # revises. Declared here because the model is constrained to
+                    # this schema - a field absent from it can never be emitted.
+                    # extracted/ stays on schema_version 1 (A4 permits additive
+                    # optional fields).
+                    "supersedes": {"type": "string"},
                 },
             },
         },
@@ -355,6 +361,106 @@ def build_vocab_section(canonicals: list[str]) -> str:
         "Use these canonical topic-tags when applicable; only invent new tags "
         "for genuinely new subjects:\n\n"
         f"{vocab_line}\n"
+    )
+
+
+# ----- Existing-slug injection (delta-writing as an instruction) -----
+
+# How many recent slugs to show the model for one project. The join decides
+# MEMBERSHIP, not volume: `claude-code-skills` alone holds 1721 entries, so "all
+# slugs for this project" would recreate exactly the unmanageable prompt this is
+# meant to avoid.
+SLUG_INJECT_LIMIT = 100
+# How far back to walk the corpus while building the index. Entries are visited
+# newest-first, and each one may cost a raw-file open, so the walk is bounded:
+# the newest few thousand entries cover every project that is actually active,
+# and a project dormant beyond that has nothing worth showing anyway.
+SLUG_SCAN_LIMIT = 2000
+
+PROJECT_FM_RE = re.compile(r'^project:\s*"?([^"\n]+?)"?\s*$', re.MULTILINE)
+# Frontmatter sits at the top; a raw file can be 200 KB and we need 12 lines.
+FRONTMATTER_PROBE_BYTES = 2048
+
+
+def raw_project(raw_path: Path, cache: dict[Path, str]) -> str:
+    """The ``project:`` of a raw session file, or "" when absent/unreadable.
+
+    Cached per run so each raw file is opened at most once.
+    """
+    if raw_path in cache:
+        return cache[raw_path]
+    project = ""
+    try:
+        with raw_path.open("r", encoding="utf-8", errors="replace") as fh:
+            head = fh.read(FRONTMATTER_PROBE_BYTES)
+        m = PROJECT_FM_RE.search(head)
+        if m:
+            project = m.group(1).strip()
+    except OSError:
+        pass
+    cache[raw_path] = project
+    return project
+
+
+def build_slug_index(memory_dir: Path, raw_root: Path) -> dict[str, list[str]]:
+    """``{project: [recent entry slugs, newest first]}``.
+
+    ``extracted/`` entries carry no project field, so the join goes through the
+    one link they do carry: ``source:`` names the raw session file, and that file
+    has ``project:`` in its frontmatter.
+
+    Degrades to ``{}`` rather than failing - a missing index costs a prompt
+    section, never a session.
+    """
+    try:
+        from _extracted_entries import scan_extracted, wikilink_target
+    except ImportError:
+        return {}
+    try:
+        entries, _headers = scan_extracted(memory_dir / "extracted")
+    except OSError:
+        return {}
+    entries.sort(key=lambda e: (e.date, e.order), reverse=True)
+
+    index: dict[str, list[str]] = {}
+    cache: dict[Path, str] = {}
+    for e in entries[:SLUG_SCAN_LIMIT]:
+        if not e.source:
+            continue
+        target = wikilink_target(e.source)
+        if not target:
+            continue
+        project = raw_project(raw_root / f"{target}.md", cache)
+        if not project:
+            continue
+        bucket = index.setdefault(project, [])
+        if len(bucket) < SLUG_INJECT_LIMIT:
+            bucket.append(e.slug)
+    return index
+
+
+def build_slug_section(slugs: list[str]) -> str:
+    """Render the existing-entry block appended to the system prompt.
+
+    This is what makes delta-writing an INSTRUCTION rather than a mechanism: the
+    model is told what has already been captured for this project and asked to
+    write only what is new. A miss costs one redundant entry - which read-time
+    clustering turns into corroboration - where a write-time gate would have cost
+    the insight itself, unrecoverably, since ``extracted/`` is not git-tracked.
+    """
+    if not slugs:
+        return ""
+    listed = "\n".join(f"- {s}" for s in slugs)
+    return (
+        "\n\n# Existing entries for this project\n\n"
+        "These insights are already captured. Write what THIS session adds - a "
+        "new angle, a correction, a measurement, a consequence - not a restatement "
+        "of what is listed here.\n\n"
+        "If this session shows one of them to be wrong or incomplete, write the "
+        "corrected entry and set `supersedes` to that slug. Do not skip a genuine "
+        "new insight because it sits near an existing one; overlap is fine, "
+        "repetition of the same claim is not.\n\n"
+        f"{listed}\n"
     )
 
 
@@ -891,12 +997,18 @@ def format_heading_block(entry: dict, *, date: str, session_id: str) -> str:
     if entry.get("modal"):
         topics = f"{topics}, ¤{entry['modal']}"
     body = entry["body"].strip()
-    return (
-        f"## {entry['date']} - {entry['slug']}\n"
-        f"topics: {topics}\n"
-        f"source: [[{date}/{session_id}]]\n\n"
-        f"{body}\n\n"
-    )
+    lines = [
+        f"## {entry['date']} - {entry['slug']}",
+        f"topics: {topics}",
+        f"source: [[{date}/{session_id}]]",
+    ]
+    # Additive optional metadata line. Any consumer that strips entry metadata
+    # must know it (`_extracted_entries.METADATA_PREFIXES`), or it leaks into
+    # bodies.
+    supersedes = (entry.get("supersedes") or "").strip()
+    if supersedes:
+        lines.append(f"supersedes: {supersedes}")
+    return "\n".join(lines) + f"\n\n{body}\n\n"
 
 
 def ensure_quarter_file(extracted_dir: Path, type_: str, quarter: str) -> Path:
@@ -943,6 +1055,8 @@ def process_session(
     alias_map: dict[str, str],
     system_prompt: str,
     args: argparse.Namespace,
+    slug_index: dict[str, list[str]] | None = None,
+    project_cache: dict[Path, str] | None = None,
 ) -> tuple[int, int]:
     """Returns (entries written, entries quarantined) for this session.
 
@@ -957,6 +1071,13 @@ def process_session(
     raw_text = raw_path.read_text(encoding="utf-8")
     validate_raw_schema(raw_text, raw_path)  # H5: raises RawSchemaError on FATAL
     raw_text = sanitize_harness_tags(raw_text)  # strip prompt-injection vectors
+    # Existing-slug injection is per session, not per run: the block depends on
+    # which project this session belongs to.
+    if slug_index:
+        project = raw_project(raw_path, project_cache if project_cache is not None else {})
+        slug_section = build_slug_section(slug_index.get(project, []))
+        if slug_section:
+            system_prompt = system_prompt + slug_section
     if args.dry_run:
         print(f"  [dry-run] would call claude for {date}/{session_id}", file=sys.stderr)
         return 0, 0
@@ -1085,6 +1206,12 @@ def main(argv: list[str] | None = None) -> int:
     if vocab_section:
         system_prompt = system_prompt + vocab_section
 
+    # Built once per run, consumed per session (the block is project-scoped).
+    slug_index = build_slug_index(memory_dir, raw_root)
+    project_cache: dict[Path, str] = {}
+    if slug_index:
+        print(f"slug-injection: {len(slug_index)} project(s) indexed", file=sys.stderr)
+
     # ----- Pre-flight 1: manifest (graceful per-dir degradation) -----
     # A problem in one date-dir skips ONLY that dir; all clean dirs still extract.
     verified, mismatched, incomplete = verify_manifests(raw_root)
@@ -1185,6 +1312,8 @@ def main(argv: list[str] | None = None) -> int:
                 alias_map=alias_map,
                 system_prompt=system_prompt,
                 args=args,
+                slug_index=slug_index,
+                project_cache=project_cache,
             )
         except RawSchemaError as e:
             # H5: FATAL exit 2. Schema-version mismatch is not a per-session
