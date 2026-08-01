@@ -51,7 +51,7 @@ from pathlib import Path
 # (`memory-sources-append`) and this extract-cron use the exact same
 # load_aliases semantics. Sources-append was dropped in cortex-memory-v2
 # (compile-pass owns sources; extract no longer mutates compiled/).
-from _aliases import AliasesError, load_aliases
+from _aliases import ALIASES_FILENAME, AliasesError, load_aliases
 
 SCHEMA_VERSION = 1
 TYPES = ("observation", "decision", "learning", "error", "pattern", "intent")
@@ -1184,13 +1184,16 @@ def main(argv: list[str] | None = None) -> int:
     #   missing  -> graceful degrade + WARNING notify + exit 0
     #   empty    -> silent run without normalisation (valid pre-bootstrap state)
     #   corrupt / schema-mismatch -> hard fail exit 2 + (FATAL) notify
-    alias_map: dict[str, str] = {}
-    canonical_list: list[str] = []
+    # strict=True: the contract above requires exit 2 on corrupt/schema-mismatch,
+    # so this caller must keep raising where the nightly detectors degrade.
     try:
-        alias_map, canonical_list, alias_status = load_aliases(memory_dir)
+        aliases = load_aliases(memory_dir / ALIASES_FILENAME, strict=True)
     except AliasesError as e:
         notify(f"(FATAL) aliases.yaml unusable: {e}")
         return 2
+    alias_map = aliases.alias_to_canonical
+    canonical_list = aliases.canonicals()
+    alias_status = aliases.status
     if alias_status == "missing":
         notify("aliases.yaml not present - extract running without canonical normalisation")
     elif alias_status == "empty":

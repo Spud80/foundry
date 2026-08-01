@@ -38,7 +38,7 @@ Følgende filer importeres til `~/foundry/jobs/memory-extract/` på CT:
 | Fil | Type | Eier | Beskrivelse |
 |-----|------|------|-------------|
 | `extract.py` | Python 3.11+ | obsidian-memory | LLM-klassifisering av raw → typed extracted-entries; importerer `_aliases` + `_paths` + `_extracted_entries` (vendret ved siden av) |
-| `_aliases.py` | Python 3.11+ | obsidian-memory | `load_aliases` + `AliasesError` (aliases.yaml-parsing for topic-normalisering); vendret dep for extract.py |
+| `_aliases.py` | Python 3.11+ | obsidian-memory | `load_aliases(aliases_path, *, strict)` -> `Aliases` + `AliasesError` (aliases.yaml-parsing for topic-normalisering); vendret dep for extract.py. Re-vendres ALLTID sammen med `extract.py` - de to henger på samme signatur |
 | `_paths.py` | Python 3.11+ | obsidian-memory | `resolve_vault_root` (CLI > env > platform-default); vendret dep for extract.py |
 | `_extracted_entries.py` | Python 3.11+ | obsidian-memory | Parse-laget for `extracted/`; vendret dep for extract.py sin slug-injeksjon. Importeres lat - mangler den, degraderer injeksjonen stille til tom, så et glemt filkopi gir ingen feil, bare en feature som ikke virker i prod |
 | `system-prompt.md` | Markdown | obsidian-memory | `--system-prompt`-content for `claude -p` (override av default Claude Code system prompt) |
@@ -218,13 +218,19 @@ konsumerer `aliases.yaml` i to mekanismer:
 
 ### Felter foundry-extract IKKE leser
 
-- `tier` (signal/noise/archived)
+- `tier` (signal/noise/archived) - **men det valideres**, se under
 - `tier_confidence` (low/medium/high)
 - `tier_rationale`
 - `description`
 
 Disse konsumeres kun av obsidian-memory G3 detect og bruker-review-flow. Foundry
 nøytralt-passer-gjennom alle entries uavhengig av tier.
+
+`tier` er et unntak fra «leser ikke» på ett punkt: fra 2026-08-01 avviser den delte
+lasteren en `tier`-verdi utenfor enumet, uansett kallmodus. extract.py bruker fortsatt
+ikke verdien, men vil feile på en feilstavet en. Det er bevisst - en typo i kuratert
+data skal ikke stilletie seg gjennom en ubemannet kjøring - og målt gratis på dagens
+data (0 av 172 canonicals bryter enumet).
 
 ### Fail-modes
 
@@ -234,6 +240,7 @@ nøytralt-passer-gjennom alle entries uavhengig av tier.
 | `aliases.yaml` finnes men er corrupt YAML | Hard fail: notify Telegram `(FATAL)`, exit 2. Korrupt config er sterkere signal enn manglende - krever manuell fix før neste cron |
 | `aliases.yaml` har tom `canonicals: {}` | Behandles som "ingen aliases definert" - extract kjører uten normalisering, ingen WARNING (gyldig tilstand før bootstrap er kjørt) |
 | Schema-version-mismatch (extract.py sin minimum > aliases.yaml sin schema_version) | Hard fail exit 2, samme begrunnelse som corrupt YAML |
+| `canonicals[<slug>].tier` har verdi utenfor `signal`/`noise`/`archived` | Hard fail exit 2 (fra 2026-08-01). Dette er den ene innholds-feilen som ikke degraderer: fil-tilstand styres av lasterens `strict`-flagg, men en ugyldig tier-verdi er en skrivefeil i håndkuratert data og feiler i begge modi |
 | `aliases.yaml.sync-conflict-*` finnes i vault | Fanget av eksisterende run.sh pre-flight (`ssh filehub-cleanup --require-clean /data/sync/obsidian /data/sync/claude-memory`). Cleanup-scriptet quarantines conflict-fila som "ukjent type" til `/var/lib/syncthing-conflicts/<dato>/` og returnerer exit 1; run.sh aborter med Telegram-varsel før extract.py kalles. Ingen ekstra håndtering nødvendig i extract.py |
 
 ### Python-deps
