@@ -1,8 +1,15 @@
 r"""Aliases-loading primitives for obsidian-memory pipeline.
 
-The single home for reading ``aliases.yaml``. Every consumer that needs
-alias-, canonical- or tier-data goes through :func:`load_aliases` and reads
-fields off the returned :class:`Aliases`, rather than re-parsing the YAML.
+The intended single home for reading ``aliases.yaml``: a consumer that needs
+alias-, canonical- or tier-data calls :func:`load_aliases` and reads fields off
+the returned :class:`Aliases` rather than re-parsing the YAML.
+
+**Not yet true of every consumer.** As of 2026-08-01 eight script-local loader
+variants still exist and are scheduled for migration in phases 200-300 of
+memory-shared-primitives; three of them still coerce an unknown tier to
+``signal``. Until that lands, the verification command at the bottom of this
+docstring reports more than one hit, and that is expected rather than a
+regression.
 
 Split out from the former ``_k6_source_append.py`` 2026-05-24 as part of
 cortex-memory-v2 Phase 200 Substep 6c. The Sources-append surface was
@@ -163,7 +170,13 @@ def load_aliases(aliases_path: Path, *, strict: bool = False) -> Aliases:
         canonical_to_aliases[canon_slug] = []
         if not isinstance(info, dict):
             continue
-        tier = info.get("tier", DEFAULT_TIER)
+        # `or` and not `.get(key, default)`: a hand-edited `tier:` with nothing
+        # after it parses as None, and an empty string is the same statement.
+        # Both are the field being unstated, which A3 does not cover - A3 is
+        # about a value outside the enum, i.e. a typo. Defaulting them keeps the
+        # behaviour the replaced variants had, where every falsy tier read as
+        # signal; a genuine wrong value is truthy and still raises below.
+        tier = info.get("tier") or DEFAULT_TIER
         if tier not in VALID_TIERS:
             # Not behind `strict`: see the module docstring on the two failure
             # classes. Silently coercing this to signal is the exact failure the
