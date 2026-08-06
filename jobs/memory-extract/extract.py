@@ -44,7 +44,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 # Aliases-loading lives in a shared helper so the CLI
@@ -64,6 +64,13 @@ STATE_FILENAME = ".compile-state.json"
 # raw_schema_version > MIN aborts FATAL (exit 2) to force coordinated bump
 # rather than silently feeding incompatible raw-format to the LLM.
 MIN_RAW_SCHEMA_VERSION = 1
+# An `incomplete` date-dir means "capture or sync still in flight" - transient by
+# design, skipped quietly, retried next cron. That reading expires: after this
+# many days nothing is in flight any more and the dir is stranded. Nothing else
+# in the pipeline says so, because a stranded dir drops out of `verified_names`,
+# its sessions stop counting toward the backlog, and only `mismatched` notified.
+# Two days is two full capture+extract cycles (18:00 / 18:30 daily).
+INCOMPLETE_NOTIFY_AGE_DAYS = 2
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 # H5: raw-frontmatter parsing for schema-version validation. Lightweight
@@ -513,7 +520,27 @@ class PreflightError(Exception):
     """Raised for transient pre-flight failures. Caller exits 0 (retry next cron)."""
 
 
-def verify_manifests(raw_root: Path) -> tuple[list[Path], list[str], list[str]]:
+def incomplete_dir_is_aged(
+    dir_name: str,
+    today: date,
+    max_age_days: int = INCOMPLETE_NOTIFY_AGE_DAYS,
+) -> bool:
+    """True when an `incomplete` date-dir is too old to still be in flight.
+
+    Date-dirs are named ``YYYY-MM-DD``. A name that is not a date can never
+    become fresh by waiting, so it is reported rather than hidden - a silently
+    skipped dir is the failure mode this predicate exists to make visible.
+    """
+    try:
+        dir_date = date.fromisoformat(dir_name)
+    except ValueError:
+        return True
+    return (today - dir_date).days > max_age_days
+
+
+def verify_manifests(
+    raw_root: Path,
+) -> tuple[list[Path], list[str], list[tuple[str, str]]]:
     """Classify every non-empty date-dir as verified / mismatched / incomplete.
 
     Returns (verified, mismatched, incomplete):
@@ -522,9 +549,11 @@ def verify_manifests(raw_root: Path) -> tuple[list[Path], list[str], list[str]]:
       - mismatched: reasons for date-dirs with a sha256 mismatch (persistent
                     drift - typically post-restore or an external/Syncthing edit
                     of a raw file). SKIPPED until `reconcile-manifest.py --apply`.
-      - incomplete: reasons for date-dirs whose manifest is missing/unparseable
-                    or lists a file not present locally (capture/sync in flight).
-                    SKIPPED this run, retried next cron.
+      - incomplete: ``(date-dir name, reason)`` for date-dirs whose manifest is
+                    missing/unparseable or lists a file not present locally
+                    (capture/sync in flight). SKIPPED this run, retried next
+                    cron. The name is returned alongside the reason so the
+                    caller can age the dir without parsing it back out of prose.
 
     Graceful degradation (2026-06-09): a problem in ONE date-dir no longer aborts
     the whole run. This previously raised on the first sha mismatch -> exit 3 ->
@@ -534,7 +563,7 @@ def verify_manifests(raw_root: Path) -> tuple[list[Path], list[str], list[str]]:
     """
     verified: list[Path] = []
     mismatched: list[str] = []
-    incomplete: list[str] = []
+    incomplete: list[tuple[str, str]] = []
     if not raw_root.is_dir():
         return verified, mismatched, incomplete
     for date_dir in sorted(p for p in raw_root.iterdir() if p.is_dir()):
@@ -543,16 +572,19 @@ def verify_manifests(raw_root: Path) -> tuple[list[Path], list[str], list[str]]:
             continue
         manifest_path = date_dir / MANIFEST_FILENAME
         if not manifest_path.exists():
-            incomplete.append(
+            incomplete.append((
+                date_dir.name,
                 f"missing manifest for {date_dir.name} "
-                f"({len(md_files)} raw-files present without manifest)"
-            )
+                f"({len(md_files)} raw-files present without manifest)",
+            ))
             continue
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             listed = {entry["path"]: entry["sha256"] for entry in manifest.get("sessions", [])}
         except (json.JSONDecodeError, KeyError, TypeError) as e:
-            incomplete.append(f"manifest unparseable for {date_dir.name}: {e}")
+            incomplete.append(
+                (date_dir.name, f"manifest unparseable for {date_dir.name}: {e}")
+            )
             continue
 
         # raw_root = .../8.Cortex/Memory/raw, rel_path = raw/<date>/<file>.md,
@@ -581,7 +613,7 @@ def verify_manifests(raw_root: Path) -> tuple[list[Path], list[str], list[str]]:
         elif problem_is_mismatch:
             mismatched.append(problem)
         else:
-            incomplete.append(problem)
+            incomplete.append((date_dir.name, problem))
     return verified, mismatched, incomplete
 
 
@@ -1218,9 +1250,19 @@ def main(argv: list[str] | None = None) -> int:
     # ----- Pre-flight 1: manifest (graceful per-dir degradation) -----
     # A problem in one date-dir skips ONLY that dir; all clean dirs still extract.
     verified, mismatched, incomplete = verify_manifests(raw_root)
-    for reason in incomplete:
+    today = datetime.now(timezone.utc).date()
+    for dir_name, reason in incomplete:
         # Transient (capture/sync in flight) - skip quietly, retried next cron.
         print(f"preflight (manifest): skip dir - {reason}", file=sys.stderr)
+        if incomplete_dir_is_aged(dir_name, today):
+            # No longer plausibly in flight. Nothing downstream reports this:
+            # the dir is out of verified_names and its sessions are out of the
+            # backlog, so without a notify a stranded dir is indistinguishable
+            # from a healthy one.
+            notify(
+                f"preflight-degraded: date-dir stranded "
+                f"{INCOMPLETE_NOTIFY_AGE_DAYS}+ days (incomplete manifest) - {reason}"
+            )
     for reason in mismatched:
         # Persistent drift - skip the dir but notify so the operator reconciles.
         print(f"preflight (manifest): skip dir - {reason}", file=sys.stderr)

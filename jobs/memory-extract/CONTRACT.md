@@ -26,6 +26,19 @@ injeksjon av eksisterende entry-slugs for sesjonens prosjekt i system-prompten. 
 foundry-siden å back-porte først: de vendrede kopiene var byte-identiske med cortex HEAD.
 Ontologien er uendret - de samme seks entry-typene fanges som før.
 
+**Status (stranded-manifest-reimport 2026-08-06):** kun `extract.py` reimportert fra
+`cortex/scripts/memory/`. Innhold: en `incomplete`-klassifisert dato-mappe som er eldre enn
+to døgn varsles nå via `notify()` i stedet for å skrives stille til stderr. `incomplete` bærer
+samtidig `(dato-mappe, årsak)` i stedet for bare årsaken, så alderen kan avgjøres uten å
+parse dato-mappa ut av prosa igjen. Ingen drift fra foundry-siden å back-porte: den vendrede
+kopien var byte-identisk med cortex HEAD før importen.
+
+*Kjent, pre-eksisterende drift (ikke rørt av denne importen):* `_aliases.py` og
+`_extracted_entries.py` ligger noen cortex-commits bak master. Begge avvikene er docstring- og
+intern-refaktor (uttrekk av `split_entry_blocks`); symbolene `extract.py` faktisk importerer
+(`scan_extracted`, `wikilink_target`, `load_aliases`, `ALIASES_FILENAME`, `AliasesError`)
+finnes uendret i begge kopiene.
+
 **Filformat-autoritet:** `cortex/docs/contracts/memory-knowledge-contract.md`
 ([GitHub](https://github.com/Spud80/cortex/blob/dev/docs/contracts/memory-knowledge-contract.md))
 eier raw/-format, manifest-format, og extracted/-format inkludert `schema_version`. Foundry
