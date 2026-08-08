@@ -147,9 +147,9 @@ ${OBSIDIAN_VAULT_ROOT}/
 <raw-root>/<YYYY-MM-DD>/<session-id>.md            (kun for wikilink-validation)
 ```
 
-`<raw-root>` ligger IKKE under `<vault-root>`: korpuset ble flyttet ut av
+`<raw-root>` trenger ikke ligge under `<vault-root>`: korpuset flyttes ut av
 vault-treet slik at Obsidian slipper aa parse ~8 000 maskin-genererte
-transkripsjoner. Formen under rota er uendret. Autoritativt hjem for
+transkripsjoner. Formen under rota er uendret, før som etter. Autoritativt hjem for
 env-navnet og default-stien er `cortex/scripts/memory/_paths.py`; parity
 mot den sjekkes i `_test/smoke_phase_1000.py`.
 
