@@ -7,7 +7,8 @@ from the sha256 recorded in `_capture-manifest.json` (written by
 to process date-dirs with mismatched sha to avoid feeding half-synced data
 into the compiled layer.
 
-This tool walks `<vault-root>/8.Cortex/Memory/raw/*/_capture-manifest.json`,
+This tool walks `<raw-root>/*/_capture-manifest.json` (raw-root resolved by
+`_paths.resolve_raw_dir`: --raw-root > CORTEX_RAW_ROOT > vault-root default),
 recomputes sha256 from disk, and updates the manifest entry to match. Dry-run
 by default - require --apply to write.
 
@@ -71,6 +72,13 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+
+# This tool used to be deliberately import-free so it could be copied to any
+# host on its own. Raw-root resolution ended that: a recovery tool that guesses
+# its own root is a recovery tool that can report a clean corpus it never
+# looked at. _paths.py now ships with it (declared in deploy-sets.yaml).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _paths import RAW_LEAF, RawRootUnavailable, require_raw_dir  # noqa: E402
 
 
 MANIFEST_FILENAME = "_capture-manifest.json"
@@ -171,7 +179,7 @@ def reconcile_date_dir(date_dir: Path, apply: bool) -> tuple[int, int, list[str]
     fixed = 0
     changed_entries: list[tuple[str, str, str]] = []
 
-    # Containment-root for path-traversal defence: the raw/-tree under Memory.
+    # Containment-root for path-traversal defence: the raw/-tree itself.
     # All listed paths must resolve inside this directory; reject anything that
     # escapes via "../" or absolute-path injection in a malformed manifest.
     raw_root = (date_dir.parent.parent / "raw").resolve()
@@ -179,7 +187,9 @@ def reconcile_date_dir(date_dir: Path, apply: bool) -> tuple[int, int, list[str]
     for entry in sessions:
         rel_path = entry["path"]
         expected = entry["sha256"]
-        # rel_path = "raw/<date>/<file>.md"; date_dir.parent.parent = vault/8.Cortex/Memory
+        # rel_path = "raw/<date>/<file>.md"; date_dir.parent.parent = the raw
+        # root's parent. Anchored on the manifest's own convention, so it
+        # follows the corpus wherever the root is configured to live.
         local = date_dir.parent.parent / rel_path
         try:
             resolved = local.resolve()
@@ -236,6 +246,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Path to vault root (default: $OBSIDIAN_VAULT_ROOT)",
     )
     p.add_argument(
+        "--raw-root",
+        default=None,
+        help=("Path to the raw session corpus (default: $CORTEX_RAW_ROOT, else "
+              "the raw/ dir under the resolved vault root). Wins over "
+              "--vault-root, which is kept for backward compatibility."),
+    )
+    p.add_argument(
         "--date",
         help="Limit to single date-dir (YYYY-MM-DD format)",
     )
@@ -256,13 +273,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = p.parse_args(argv)
 
-    if not args.vault_root:
-        print("ERROR: --vault-root required (or set OBSIDIAN_VAULT_ROOT)", file=sys.stderr)
+    try:
+        raw_root = require_raw_dir(
+            cli_raw_root=args.raw_root, cli_vault_root=args.vault_root
+        )
+    except RawRootUnavailable as e:
+        print(f"ERROR: {e}", file=sys.stderr)
         return 1
 
-    raw_root = Path(args.vault_root) / "8.Cortex" / "Memory" / "raw"
-    if not raw_root.is_dir():
-        print(f"ERROR: raw-root not found: {raw_root}", file=sys.stderr)
+    # The manifest records each session as "raw/<date>/<file>.md" and every
+    # consumer resolves it against the raw root's PARENT. That only holds while
+    # the root's own leaf is "raw" - which the relocation deliberately keeps.
+    # Say so here rather than let a differently-named root produce a clean
+    # "mismatches found: 0" against files it never opened; this tool is the
+    # gate the corpus deletion hangs on.
+    if raw_root.name != RAW_LEAF:
+        print(f"ERROR: raw-root must end in {RAW_LEAF!r}, got: {raw_root}",
+              file=sys.stderr)
         return 1
 
     # Acquire concurrency-lock if requested. Holding lock_fh open keeps the

@@ -52,7 +52,8 @@ Følgende filer importeres til `~/foundry/jobs/memory-extract/` på CT:
 |-----|------|------|-------------|
 | `extract.py` | Python 3.11+ | obsidian-memory | LLM-klassifisering av raw → typed extracted-entries; importerer `_aliases` + `_paths` + `_extracted_entries` (vendret ved siden av) |
 | `_aliases.py` | Python 3.11+ | obsidian-memory | `load_aliases(aliases_path, *, strict)` -> `Aliases` + `AliasesError` (aliases.yaml-parsing for topic-normalisering); vendret dep for extract.py. Re-vendres ALLTID sammen med `extract.py` - de to henger på samme signatur |
-| `_paths.py` | Python 3.11+ | obsidian-memory | `resolve_vault_root` (CLI > env > platform-default); vendret dep for extract.py |
+| `_paths.py` | Python 3.11+ | obsidian-memory | `resolve_vault_root` og `resolve_raw_dir`/`require_raw_dir` (CLI > env > platform-default); vendret dep for extract.py OG reconcile-manifest.py. Autoritativt hjem for raw-rot-navnet `CORTEX_RAW_ROOT` |
+| `reconcile-manifest.py` | Python 3.11+ | obsidian-memory | Manifest-reparasjon etter backup-restore; **importerer `_paths` fra 2026-08-09** (var stdlib-only før). Re-importeres alltid sammen med `_paths.py` |
 | `_extracted_entries.py` | Python 3.11+ | obsidian-memory | Parse-laget for `extracted/`; vendret dep for extract.py sin slug-injeksjon. Importeres lat - mangler den, degraderer injeksjonen stille til tom, så et glemt filkopi gir ingen feil, bare en feature som ikke virker i prod |
 | `system-prompt.md` | Markdown | obsidian-memory | `--system-prompt`-content for `claude -p` (override av default Claude Code system prompt) |
 | `requirements.txt` | Python deps | obsidian-memory | `requests>=2.31.0` (kun for optional Syncthing REST-pre-flight); deploy.sh setter opp `.venv/` |
@@ -148,9 +149,13 @@ Rene date-dirs prosesseres alltid, så én drivet historisk fil kan ikke lenger 
 pipelinen (50t-utfall 2026-06-06). Exit-koden følger prosesseringen (0 ved suksess, 1 ved
 per-session-feil); **exit 3 emitteres ikke lenger**.
 
-**Reconcile-verktøy:** `jobs/memory-extract/reconcile-manifest.py` (vendret fra
-`cortex/scripts/memory/reconcile-manifest.py`; selvstendig - kun stdlib, ingen lokale
-imports). Operator kjører det på foundry-CT etter en mismatched-notify:
+**Reconcile-verktøy:** `jobs/memory-extract/reconcile-manifest.py` (kopi av
+`cortex/scripts/memory/reconcile-manifest.py`). Det var stdlib-only fram til 2026-08-09;
+nå importerer det `_paths` for raw-rot-oppslag, fordi et gjenopprettings-verktøy som
+gjetter sin egen rot kan melde et korpus rent uten å ha åpnet det. `_paths.py` ligger i
+samme katalog og må re-importeres sammen med det. Raw-rota kan overstyres med `--raw-root`
+eller `$CORTEX_RAW_ROOT`; `--vault-root` beholdes for bakoverkompatibilitet og brukes kun
+til å utlede defaulten. Operator kjører det på foundry-CT etter en mismatched-notify:
 
 ```bash
 ~/foundry/jobs/memory-extract/.venv/bin/python \

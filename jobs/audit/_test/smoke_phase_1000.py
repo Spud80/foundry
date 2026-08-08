@@ -19,6 +19,9 @@ Covers PLAN-foundry Phase 1000 task 1000-6 scenarios:
  15. Vault-unavailable returns exit code 124
  16. Excluded paths (_test/, archive/, templates/, _underscore-prefix) skipped
  17. Sync-conflict files skipped
+ 18. Raw-root contract parity against the cortex fixture (three-party check)
+ 19. Raw index follows CORTEX_RAW_ROOT (the relocation cutover)
+ 20. Missing raw root refuses the pass (124) instead of emptying the index
 
 Run from repo root:
   python jobs/audit/_test/smoke_phase_1000.py
@@ -105,8 +108,12 @@ def make_entry(
 
 
 def make_raw_session(vault_root: Path, date: str, sid: str) -> Path:
-    """Create a stub raw-session file for source_session resolution."""
-    p = vault_root / "8.Cortex" / "Memory" / "raw" / date / f"{sid}.md"
+    """Create a stub raw-session file for source_session resolution.
+
+    Built from the job's own root resolver, not from a hardcoded vault-relative
+    path: the corpus was relocated out of the vault tree, and a fixture that
+    keeps the old shape tests a topology production no longer has."""
+    p = audit.raw_root_for(vault_root) / date / f"{sid}.md"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("# raw session\n", encoding="utf-8")
     return p
@@ -119,7 +126,7 @@ def make_vault(tmp: Path) -> tuple[Path, Path, Path]:
     (vault_root / "2.Resources" / "Notes" / "Books").mkdir(parents=True)
     (vault_root / "2.Resources" / "Notes" / "Misc").mkdir(parents=True)
     (vault_root / "2.Resources" / "Notes" / "Annotations").mkdir(parents=True)
-    (vault_root / "8.Cortex" / "Memory" / "raw" / "2026-05-13").mkdir(parents=True)
+    (audit.raw_root_for(vault_root) / "2026-05-13").mkdir(parents=True)
     (vault_root / "5.Utility" / "Pipeline" / "Audit-Reports").mkdir(parents=True)
     report_dir = vault_root / "5.Utility" / "Pipeline" / "Audit-Reports"
     state_file = tmp / "audit-state.json"
@@ -706,6 +713,92 @@ def scenario_axis_disagreement_weights():
     assert res == (0.5, "abstain"), f"expected (0.5, 'abstain'), got {res!r}"
 
 
+# ---------- Raw-root contract (three-party parity) ----------
+
+CORTEX_FIXTURE = (
+    HERE.parents[3] / "cortex" / "tests" / "memory" / "raw-root-parity-fixtures.json"
+)
+
+
+def scenario_raw_root_contract_parity():
+    """This job's copy of the raw-root contract must match cortex's fixture.
+
+    cortex/scripts/memory/_paths.py is the declared home for the env-var name
+    and the default segments. Three repos carry a copy and none of them import
+    each other, so a generated fixture is the only thing that can catch drift.
+    This is the third party's side of it - added because the first draft named
+    only two repos, which is exactly the undercount that let this job slip
+    through a green gate.
+
+    Skips when cortex is not checked out beside foundry: the honest limit of a
+    cross-repo check without CI.
+    """
+    if not CORTEX_FIXTURE.is_file():
+        print(f"  [SKIP] scenario_raw_root_contract_parity "
+              f"(no sibling cortex checkout at {CORTEX_FIXTURE})")
+        return
+    contract = json.loads(CORTEX_FIXTURE.read_text(encoding="utf-8"))
+    assert contract["schema"] == "cortex-raw-root-contract/1", (
+        f"unknown fixture schema {contract['schema']!r}"
+    )
+    assert audit.RAW_ROOT_ENV == contract["raw_root_env"], (
+        f"env-name drift: audit.py has {audit.RAW_ROOT_ENV!r}, "
+        f"cortex declares {contract['raw_root_env']!r}"
+    )
+    assert list(audit.RAW_SUBDIR) == contract["raw_subdir_segments"], (
+        f"default-segment drift: audit.py has {list(audit.RAW_SUBDIR)}, "
+        f"cortex declares {contract['raw_subdir_segments']}"
+    )
+    assert "foundry/jobs/audit/audit.py" in contract["parties"], (
+        "this job is not a declared party to the contract it depends on"
+    )
+
+
+def scenario_raw_root_follows_the_env():
+    """The cutover in one assertion: index built from the configured root."""
+    tmp = Path(tempfile.mkdtemp())
+    try:
+        vault_root, report_dir, state_file = make_vault(tmp)
+        relocated = tmp / "cortex" / "raw"
+        (relocated / "2026-05-13").mkdir(parents=True)
+        os.environ["CORTEX_RAW_ROOT"] = str(relocated)
+        try:
+            assert audit.raw_root_for(vault_root) == relocated
+            sid = "aaaaaaaa-1111-2222-3333-444444444444"
+            raw = make_raw_session(vault_root, "2026-05-13", sid)
+            assert raw.parent.parent == relocated, f"fixture landed at {raw}"
+            coll = audit.collect_entries(vault_root)
+            assert ("2026-05-13", sid) in coll["raw_index"], (
+                "relocated raw session missing from the index"
+            )
+        finally:
+            del os.environ["CORTEX_RAW_ROOT"]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def scenario_missing_raw_root_refuses_the_pass():
+    """An absent root must not become an empty index.
+
+    An empty raw_index reports every note with `source: ai-session` as
+    `kritisk` - the whole of 2.Resources/Notes/ - so "not found" has to stop
+    the pass rather than be published as corpus-wide corruption."""
+    tmp = Path(tempfile.mkdtemp())
+    try:
+        vault_root, report_dir, state_file = make_vault(tmp)
+        os.environ["CORTEX_RAW_ROOT"] = str(tmp / "not-here")
+        try:
+            rc = run_audit(vault_root, report_dir, state_file)
+            assert rc == 124, f"expected 124 (unavailable), got {rc}"
+            assert not list(report_dir.glob("*.md")), (
+                "a refused pass must not publish a report"
+            )
+        finally:
+            del os.environ["CORTEX_RAW_ROOT"]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 SCENARIOS = [
     scenario_empty_vault,
     scenario_dedup_collision,
@@ -730,6 +823,9 @@ SCENARIOS = [
     scenario_vault_unavailable,
     scenario_excluded_paths,
     scenario_sync_conflict_files_skipped,
+    scenario_raw_root_contract_parity,
+    scenario_raw_root_follows_the_env,
+    scenario_missing_raw_root_refuses_the_pass,
 ]
 
 

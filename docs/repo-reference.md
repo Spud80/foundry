@@ -41,7 +41,7 @@ Detaljert repo-map, arkitektur-beslutninger og fil-roller. Flyttet fra `CLAUDE.m
 | Notify pipeline | `_shared/notify-core.sh` source'es av både `_shared/notify.sh` og `bootstrap/watchdog-notify.sh`; queue-fil til `~/foundry/queue/` med drain-cron `*/5` | At-least-once-semantikk; queue overlever Telegram-outage; CI-test verifiserer paritet mellom entrypoints |
 | Payload-guard pattern | Hver jobb hvor cron-registrering aktiveres før payload-import har `[ -f <payload> ] || { notify "<job>: payload not deployed"; exit 0; }` som første linje i `run.sh` | Lar inaktive jobber coexiste med aktiv cron uten daglige feil; deploy.sh agnostisk til payload-tilstand |
 | Pre-flight Syncthing-cleanliness | `ssh filehub-cleanup <PATH+>` i run.sh - wrapper auto-prepender `--require-clean` på filehub. Exit 1 hvis quarantine i scoped paths | Foundry skal ikke ekstrahere fra ukonsistent sync-state; full /data/sync-scan skjer alltid (idempotent housekeeping) |
-| Sync-completion handshake | Manifest-fil i `8.Cortex/Memory/raw/<dato>/_capture-manifest.json` med sha256 per session | Syncthing garanterer ikke fil-rekkefølge; manifest med checksums er deterministisk handshake mellom capture og extract |
+| Sync-completion handshake | Manifest-fil i `<raw-root>/<dato>/_capture-manifest.json` (`$CORTEX_RAW_ROOT`, ellers `<vault>/8.Cortex/Memory/raw/`) med sha256 per session | Syncthing garanterer ikke fil-rekkefølge; manifest med checksums er deterministisk handshake mellom capture og extract |
 
 ## Key Files
 

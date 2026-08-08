@@ -28,7 +28,8 @@ Minimum-supported-schema-version: 1 (per `audit-pass-spec.md` "Consumer declarat
 Per cron-run (04:00 norsk lokal-tid):
 
 1. **Scan vault** for entries i `1.Inbox/`, `2.Resources/Notes/**/`, og
-   `8.Cortex/Memory/raw/**/` (kun lese-tilgang).
+   raw-korpuset `<raw-root>/**/` (kun lese-tilgang). `<raw-root>` er
+   `$CORTEX_RAW_ROOT` nar satt, ellers `<vault>/8.Cortex/Memory/raw/`.
 2. **Kjor 6 audit-sjekker** sekvensielt per `audit-pass-spec.md`:
    - Sjekk 1: dedup-verification (full-vault)
    - Sjekk 2: schema-compliance
@@ -88,7 +89,7 @@ Per `audit-pass-spec.md` "Exit codes":
 | 0 | Suksess (med eller uten findings) | Logg, exit 0 stille |
 | 1 | Uventet runtime-feil (caught exception, fallthrough) | Notify Telegram `(FATAL)`, exit 1 |
 | 2 | Schema-mismatch pa audit-runner config (spec drifted) | Notify Telegram `(FATAL)`, exit 2 |
-| 124 | Vault-uavailable (Syncthing-mount mangler) | Notify "TIMEOUT" eller "vault unavailable", exit 124 |
+| 124 | Vault- eller raw-korpus utilgjengelig (Syncthing-mount mangler) | Notify "TIMEOUT", "vault unavailable" eller "raw corpus unavailable", exit 124 |
 | Andre | Behandles som fatal | Notify, exit som-er |
 
 Tier-policy er separat fra exit-code:
@@ -143,8 +144,14 @@ ${OBSIDIAN_VAULT_ROOT}/
   ai-capture-FAILED-*.md
 2.Resources/Notes/
   Books/, Media/, Quotes/, Ideas/, People/, Podcasts/, Annotations/, Misc/
-8.Cortex/Memory/raw/<YYYY-MM-DD>/<session-id>.md   (kun for wikilink-validation)
+<raw-root>/<YYYY-MM-DD>/<session-id>.md            (kun for wikilink-validation)
 ```
+
+`<raw-root>` ligger IKKE under `<vault-root>`: korpuset ble flyttet ut av
+vault-treet slik at Obsidian slipper aa parse ~8 000 maskin-genererte
+transkripsjoner. Formen under rota er uendret. Autoritativt hjem for
+env-navnet og default-stien er `cortex/scripts/memory/_paths.py`; parity
+mot den sjekkes i `_test/smoke_phase_1000.py`.
 
 Eksklusjoner:
 
@@ -220,6 +227,7 @@ mitigeringen kan utvides analogt).
 |----------|-----------------|
 | `1.Inbox/` eller `2.Resources/Notes/` mangler | exit 124 (vault unavailable), tier kritisk etter 2 paafolgende |
 | `OBSIDIAN_VAULT_ROOT` ikke satt eller path eksisterer ikke | Hard fail: notify Telegram `(FATAL)`, exit 2 |
+| Raw-rota (`$CORTEX_RAW_ROOT`, ellers default) eksisterer ikke | exit 124 (raw corpus unavailable), ingen rapport skrives. Raw-korpuset ligger utenfor vaulten, så en montert vault sier ingenting om det. Tom raw-indeks ville rapportert HVER note med `source: ai-session` som `kritisk` - hele `2.Resources/Notes/` - så passet nekter i stedet |
 | `system-prompt.md` mangler | Hard fail: notify Telegram `(FATAL)`, exit 2 |
 | Frontmatter-YAML korrupt pa enkelt-fil | Logg WARNING, registrer som schema-violation (sjekk 2), fortsett |
 | `claude -p` returnerer ikke-parsbar JSON (sjekk 4) | Logg WARNING, hopp over den entry'en fra sample, fortsett |

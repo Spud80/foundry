@@ -52,6 +52,7 @@ from pathlib import Path
 # load_aliases semantics. Sources-append was dropped in cortex-memory-v2
 # (compile-pass owns sources; extract no longer mutates compiled/).
 from _aliases import ALIASES_FILENAME, AliasesError, load_aliases
+from _paths import RawRootUnavailable, require_raw_dir
 
 SCHEMA_VERSION = 1
 TYPES = ("observation", "decision", "learning", "error", "pattern", "intent")
@@ -565,7 +566,12 @@ def verify_manifests(
     mismatched: list[str] = []
     incomplete: list[tuple[str, str]] = []
     if not raw_root.is_dir():
-        return verified, mismatched, incomplete
+        # NOT an empty result. An absent root returned "nothing to verify",
+        # which reads exactly like a night with no new sessions - the shape of
+        # the 50h stall this function's degradation notes above already
+        # describe. Relocation makes a wrong root a live possibility, so the
+        # two answers are now different answers.
+        raise RawRootUnavailable(f"raw root does not exist: {raw_root}")
     for date_dir in sorted(p for p in raw_root.iterdir() if p.is_dir()):
         md_files = sorted(date_dir.glob("*.md"))
         if not md_files:
@@ -587,8 +593,9 @@ def verify_manifests(
             )
             continue
 
-        # raw_root = .../8.Cortex/Memory/raw, rel_path = raw/<date>/<file>.md,
-        # so the on-disk file is raw_root.parent / rel_path.
+        # rel_path = raw/<date>/<file>.md, anchored on the raw root's PARENT -
+        # the manifest's own convention, which follows the corpus wherever the
+        # root is configured to live (the leaf stays "raw").
         problem: str | None = None
         problem_is_mismatch = False
         for rel_path, expected_sha in listed.items():
@@ -709,7 +716,9 @@ def discover_raw_sessions(raw_root: Path) -> list[tuple[str, str, Path]]:
     """Return [(date, session-id, path), ...] for every raw markdown file."""
     out: list[tuple[str, str, Path]] = []
     if not raw_root.is_dir():
-        return out
+        # An empty list here means "no sessions to extract"; a missing root
+        # must not be able to say that. Same failure class as verify_manifests.
+        raise RawRootUnavailable(f"raw root does not exist: {raw_root}")
     for date_dir in sorted(p for p in raw_root.iterdir() if p.is_dir()):
         for md in sorted(date_dir.glob("*.md")):
             out.append((date_dir.name, md.stem, md))
@@ -1202,7 +1211,11 @@ def main(argv: list[str] | None = None) -> int:
 
     vault = vault_root_from_args(args)
     memory_dir = vault / "8.Cortex" / "Memory"
-    raw_root = memory_dir / "raw"
+    try:
+        raw_root = require_raw_dir(cli_vault_root=args.vault_root)
+    except RawRootUnavailable as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 2
     extracted_dir = memory_dir / "extracted"
     state_path = memory_dir / STATE_FILENAME
 

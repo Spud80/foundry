@@ -46,6 +46,33 @@ CAPTURE_ENUM = {"idea", "quote", "book", "movie", "tv_series", "podcast", "perso
 INTENT_ENUM = {"followup", "reminder", "someday", "question", "decision", None}
 STATUS_ENUM = {"active", "snoozed", "superseded", "done", "archived"}
 
+# Raw-root contract. The declared home for where the raw session corpus lives,
+# and for what the lookup is called, is cortex/scripts/memory/_paths.py. This
+# job cannot import it: jobs/audit/ is a standalone job-dir with no shared
+# module, foundry has no precedent for importing between job-dirs, and a fourth
+# vendored file copy is the expensive way to spell two constants. So it reads
+# the same env var and falls back to the same segments - both pinned by
+# cortex/tests/memory/raw-root-parity-fixtures.json, checked from this side in
+# _test/smoke_phase_1000.py.
+#
+# This job is why the check exists. It builds the index every `source_session:`
+# is validated against, so a root pointing at nothing does not degrade - it
+# reports every note with `source: ai-session` as `kritisk`, i.e. the whole of
+# 2.Resources/Notes/ on the first 04:00 pass after a cutover.
+RAW_ROOT_ENV = "CORTEX_RAW_ROOT"
+RAW_SUBDIR = ("8.Cortex", "Memory", "raw")
+
+
+class RawRootUnavailable(RuntimeError):
+    """The configured raw session corpus is not there."""
+
+
+def raw_root_for(vault_root: Path) -> Path:
+    """The raw session corpus: $CORTEX_RAW_ROOT, else the historical location."""
+    env = os.environ.get(RAW_ROOT_ENV) or None
+    return Path(env) if env else vault_root.joinpath(*RAW_SUBDIR)
+
+
 HARD_REQUIRED_FULL = [
     "title", "created", "updated", "capture", "intent", "source",
     "source_session", "user_id", "scope", "dedup_hash",
@@ -194,12 +221,12 @@ def collect_entries(vault_root: Path) -> dict:
     {
       'inbox': [Path, ...],         # 1.Inbox/*.md (capture-pipeline files)
       'notes': [Path, ...],         # 2.Resources/Notes/**/*.md
-      'raw_index': {(date, sid): Path},  # 8.Cortex/Memory/raw/<date>/<sid>.md index for wikilink-validation
+      'raw_index': {(date, sid): Path},  # <raw-root>/<date>/<sid>.md index for wikilink-validation
     }
     """
     inbox_dir = vault_root / "1.Inbox"
     notes_dir = vault_root / "2.Resources" / "Notes"
-    raw_dir = vault_root / "8.Cortex" / "Memory" / "raw"
+    raw_dir = raw_root_for(vault_root)
 
     inbox: list[Path] = []
     if inbox_dir.is_dir():
@@ -221,6 +248,15 @@ def collect_entries(vault_root: Path) -> dict:
             notes.append(p)
 
     raw_index: dict[tuple[str, str], Path] = {}
+    if not raw_dir.is_dir():
+        # An empty index is not a benign default here: check_wikilinks() reads
+        # a miss as a broken source_session, so "root not found" would be
+        # published as corpus-wide corruption. Refuse the pass instead.
+        raise RawRootUnavailable(
+            f"raw root not found: {raw_dir} -- set {RAW_ROOT_ENV} to the "
+            f"session corpus. Continuing would report every ai-session note "
+            f"as kritisk."
+        )
     if raw_dir.is_dir():
         for p in raw_dir.rglob("*.md"):
             try:
@@ -1313,6 +1349,19 @@ def main() -> int:
     if not vault_root.is_dir():
         log(f"vault unavailable: {vault_root}")
         notify(f"vault unavailable: {vault_root}")
+        return 124
+
+    # Same class of unavailability, separate root: the raw corpus lives beside
+    # the vault, not in it, so a mounted vault says nothing about it. Checked
+    # here rather than left to collect_entries() so the pass refuses before it
+    # does any work - and so the operator gets one notify naming the root
+    # instead of a traceback.
+    raw_root = raw_root_for(vault_root)
+    if not raw_root.is_dir():
+        log(f"raw corpus unavailable: {raw_root}")
+        notify(f"raw corpus unavailable: {raw_root} (set {RAW_ROOT_ENV}); "
+               f"refusing the pass - an empty raw index would report every "
+               f"ai-session note as kritisk")
         return 124
 
     state_file = Path(args.state_file or os.environ.get("AUDIT_STATE_FILE") or (Path.home() / ".audit-state.json"))
