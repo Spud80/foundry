@@ -25,6 +25,15 @@ LOCK_FILE="${REPO_ROOT}/.deploy.lock"
 SECRETS_FILE="${HOME}/.config/foundry/secrets.env"
 LOG_FILE="${HOME}/foundry/logs/audit.log"
 OBSIDIAN_VAULT_ROOT="${OBSIDIAN_VAULT_ROOT:-${HOME}/vault/My Vault}"
+# Raw session corpus. It sits BESIDE the vault, not inside it (2026-08-09
+# relocation): ~8 000 machine-generated transcripts were dominating Obsidian's
+# metadata-cache cost at startup. It cannot be derived from the vault root -
+# that is the point of the move - so this job has to be told where it is.
+# For THIS job the stake is the highest in the chain: an unset or wrong root
+# builds an empty raw index, and every note with source: ai-session then reads
+# as a broken source_session, i.e. the whole of 2.Resources/Notes/ reported as
+# kritisk. audit.py pre-flights the root and exits 124 rather than publish that.
+CORTEX_RAW_ROOT="${CORTEX_RAW_ROOT:-${HOME}/vault/cortex/raw}"
 AUDIT_PY="${JOB_DIR}/audit.py"
 SYSTEM_PROMPT="${JOB_DIR}/system-prompt.md"
 VENV_PYTHON="${JOB_DIR}/.venv/bin/python"
@@ -86,7 +95,7 @@ if [ ! -x "$VENV_PYTHON" ]; then
   exit 2
 fi
 
-export OBSIDIAN_VAULT_ROOT
+export OBSIDIAN_VAULT_ROOT CORTEX_RAW_ROOT
 # CLAUDE_CODE_OAUTH_TOKEN er allerede i env via 'set -a' source
 
 log "running: ${VENV_PYTHON} audit.py"

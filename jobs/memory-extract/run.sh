@@ -36,6 +36,11 @@ SECRETS_FILE="${USER_HOME}/.config/foundry/secrets.env"
 LOG_FILE="${REPO_ROOT}/logs/memory-extract.log"
 STATE_FILE="${JOB_DIR}/.state.json"
 OBSIDIAN_VAULT_ROOT="${OBSIDIAN_VAULT_ROOT:-${USER_HOME}/vault/My Vault}"
+# Raw session corpus. It sits BESIDE the vault, not inside it (2026-08-09
+# relocation): ~8 000 machine-generated transcripts were dominating Obsidian's
+# metadata-cache cost at startup. It cannot be derived from the vault root -
+# that is the point of the move - so this job has to be told where it is.
+CORTEX_RAW_ROOT="${CORTEX_RAW_ROOT:-${USER_HOME}/vault/cortex/raw}"
 FILEHUB_CLEAN_SCOPE="${FILEHUB_CLEAN_SCOPE:-/data/sync/obsidian /data/sync/claude-memory}"
 EXTRACT_PY="${JOB_DIR}/extract.py"
 VENV_PYTHON="${JOB_DIR}/.venv/bin/python"
@@ -176,7 +181,7 @@ if [ ! -x "$VENV_PYTHON" ]; then
   exit 2
 fi
 
-export OBSIDIAN_VAULT_ROOT
+export OBSIDIAN_VAULT_ROOT CORTEX_RAW_ROOT
 # CLAUDE_CODE_OAUTH_TOKEN + SYNCTHING_API_KEY er allerede i env via 'set -a' source
 
 log "running: timeout ${EXTRACT_TIMEOUT} ${VENV_PYTHON} extract.py ${EXTRACT_ARGS[*]:-}"
