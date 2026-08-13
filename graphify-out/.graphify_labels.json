@@ -18,7 +18,7 @@
   "16": "drain queue (script)",
   "17": "notify (script)",
   "18": "token expiry check (script)",
-  "19": "aliases",
   "20": "reconcile manifest",
-  "21": "Community 21"
+  "21": "extracted entries",
+  "22": "aliases"
 }
