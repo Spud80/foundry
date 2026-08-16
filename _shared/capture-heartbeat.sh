@@ -4,7 +4,8 @@
 # Reads /var/lib/memory-capture/last-run.json on filehub (written by
 # memory-capture.py at end-of-run, per PLAN-memory-pipeline-hardening
 # Phase 100). Alarms via Telegram if the marker is older than 25 hours,
-# missing, malformed, or if filehub is unreachable.
+# missing, malformed, or if filehub is unreachable. A fresh marker with
+# legacy_after_declaration > 0 sends a NOTICE: an undeclared headless program.
 #
 # Activated by cron.d/capture-heartbeat.cron at 19:00 (must run >=1h
 # after filehub capture-cron at 18:00 - cross-ref-kommentar i cron-fila).
@@ -86,6 +87,15 @@ age_h=$(( (now_epoch - completed_epoch) / 3600 ))
 
 if [ "$age_h" -ge "$STALE_THRESHOLD_HOURS" ]; then
     alarm "capture-heartbeat WARNING: capture stale (last ran ${age_h}h ago, ${sessions_written:-?} sessions written; threshold ${STALE_THRESHOLD_HOURS}h)"
+    exit 0
+fi
+
+# Canary, not a gate: capture is alive, but a legacy-layer hit on a session
+# created after the declaration marker went live means a headless program is
+# running without the marker. Field is optional (older markers lack it -> 0).
+legacy_after_declaration="$(printf '%s' "$marker_content" | jq -r '.legacy_after_declaration // 0' 2>/dev/null || echo 0)"
+if [ "${legacy_after_declaration:-0}" -gt 0 ] 2>/dev/null; then
+    alarm "capture-heartbeat NOTICE: ${legacy_after_declaration} session(s) excluded by the legacy phrase-list although created after the declaration marker went live (2026-08-12) - an undeclared headless program; see 'capture: legacy-after-declaration' lines in the filehub capture cron log"
     exit 0
 fi
 
