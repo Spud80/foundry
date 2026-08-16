@@ -28,3 +28,9 @@ jobs/*/.state.json
 # Graphify: ignore the generated graph, keep the curated community labels
 graphify-out/*
 !graphify-out/.graphify_labels.json
+# The versioned name layer is moving to the JSONL sidecar: keyed on a
+# cluster identity that is stable across build lines, curated names only,
+# merged by git's union driver (see .gitattributes). The int-keyed JSON
+# above becomes a local build artifact and loses its negation once every
+# clone has seen the sidecar.
+!graphify-out/.graphify-labels.jsonl

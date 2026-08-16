@@ -15,3 +15,9 @@
 
 # Logrotate-config (uten extension-konvensjon)
 logrotate.* text eol=lf
+
+# Curated community-name sidecar: line-oriented, one cluster per line, so
+# git's built-in union driver merges two sides without a conflict. eol=lf
+# keeps the working copy byte-stable, which the reader relies on when it
+# collapses byte-identical duplicate records silently.
+graphify-out/.graphify-labels.jsonl merge=union text eol=lf
