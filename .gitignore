@@ -25,12 +25,10 @@ jobs/*/.state.json
 # Claude Code local settings (per-machine)
 .claude/
 
-# Graphify: ignore the generated graph, keep the curated community labels
+# Graphify: the generated code graph is regenerable and ignored. The versioned
+# name layer is the curated sidecar below - keyed on a cluster identity that is
+# stable across build lines, curated names only, merged by git's union driver
+# (see .gitattributes). The int-keyed .graphify_labels.json is a LOCAL build
+# artifact: graphify reads it, heal and rebuild regenerate it, nothing commits it.
 graphify-out/*
-!graphify-out/.graphify_labels.json
-# The versioned name layer is moving to the JSONL sidecar: keyed on a
-# cluster identity that is stable across build lines, curated names only,
-# merged by git's union driver (see .gitattributes). The int-keyed JSON
-# above becomes a local build artifact and loses its negation once every
-# clone has seen the sidecar.
 !graphify-out/.graphify-labels.jsonl
