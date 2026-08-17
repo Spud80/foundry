@@ -11,3 +11,6 @@ build/
 .expo/
 coverage/
 graphify-out/
+
+# Claude Code session artefacts (settings, launch config) - not project source
+.claude/
