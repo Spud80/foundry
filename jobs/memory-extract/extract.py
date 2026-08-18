@@ -53,6 +53,7 @@ from pathlib import Path
 # (compile-pass owns sources; extract no longer mutates compiled/).
 from _aliases import ALIASES_FILENAME, AliasesError, load_aliases
 from _paths import RawRootUnavailable, require_raw_dir
+from _capture_declare import declare_capture  # noqa: E402
 
 SCHEMA_VERSION = 1
 TYPES = ("observation", "decision", "learning", "error", "pattern", "intent")
@@ -954,9 +955,16 @@ def call_claude(
         c += ["--input-format", "text"]
         return c
 
+    # Declared, not guessed. --no-session-persistence still leaves a title-stub
+    # on disk, and the rule is positive: a program that lets a model process
+    # content says so itself, on every host, whether or not that host is synced
+    # into capture today. The marker rides the prompt, so both the first call
+    # and the oversize retry below carry it.
+    declared_text = declare_capture(raw_text, "cortex-memory", "extract")
+
     proc = subprocess.run(
         _build_cmd(model),
-        input=raw_text,
+        input=declared_text,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -970,7 +978,7 @@ def call_claude(
         )
         proc = subprocess.run(
             _build_cmd(OVERSIZED_CONTEXT_MODEL),
-            input=raw_text,
+            input=declared_text,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -1181,6 +1189,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--vault-root", type=Path, default=None,
                         help="Override vault root (default: env OBSIDIAN_VAULT_ROOT or platform default)")
+    # --vault-root does NOT reach the raw corpus. resolve_raw_dir is
+    # CLI-raw-root > CORTEX_RAW_ROOT > vault-relative, and the corpus lives
+    # outside the vault in production, so the env var normally wins. Without
+    # this flag a caller that points --vault-root at a fixture keeps the
+    # fixture for extracted/ and state while reading the REAL sessions - which
+    # is exactly what smoke_h5_raw_schema.py did until 2026-08-17: it
+    # discovered all 3144 live sessions and started running the model on them.
+    # reconcile-manifest.py has had the flag all along; this was the odd one.
+    parser.add_argument("--raw-root", type=Path, default=None,
+                        help="Override the raw session corpus root "
+                             "(default: env CORTEX_RAW_ROOT, else raw/ under the vault's memory dir)")
     parser.add_argument("--model", default="sonnet",
                         help="Claude model alias or full id (default: sonnet)")
     parser.add_argument("--fallback-model", default=None)
@@ -1212,7 +1231,7 @@ def main(argv: list[str] | None = None) -> int:
     vault = vault_root_from_args(args)
     memory_dir = vault / "8.Cortex" / "Memory"
     try:
-        raw_root = require_raw_dir(cli_vault_root=args.vault_root)
+        raw_root = require_raw_dir(cli_raw_root=args.raw_root, cli_vault_root=args.vault_root)
     except RawRootUnavailable as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2

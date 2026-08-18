@@ -270,3 +270,15 @@ Per `audit-pass-spec.md` "Idempotency":
   som sjekk 3 wikilink-valideringen leser
 - `jobs/fallback-classifier/CONTRACT.md` - parallell monster (Phase 900)
 - `jobs/memory-extract/CONTRACT.md` - parallell monster (Phase 600)
+
+## Erklaerings-markoer (capture-self-declaration)
+
+`audit.py` kaller `claude -p` og erklaerer seg derfor selv: markoeren
+`<!-- claude-capture: exclude program=foundry reason=audit-pass -->` settes foerst i
+prompten via `declare_capture()` i den vendrede `_capture_declare.py`. Cortex' capture
+leser markoeren og holder sesjonen ute av minne-korpuset.
+
+Modulen er avhengighetsfri (kun `re`) og vendres fra
+`cortex/scripts/memory/_capture_declare.py`. Re-vendre den sammen med enhver endring i
+markoer-formatet - lesesiden feiler AAPENT, så en markoer som ikke matcher gir samme
+utfall som ingen markoer: sesjonen fanges, stille.

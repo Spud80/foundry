@@ -32,6 +32,8 @@ from pathlib import Path
 
 import yaml
 
+from _capture_declare import declare_capture
+
 # ---------- Constants ----------
 
 JOB_DIR = Path(__file__).resolve().parent
@@ -568,7 +570,10 @@ def call_claude_classify(body: str) -> dict:
     ]
     proc = subprocess.run(
         cmd,
-        input=body,
+        # Declared, not guessed - see _capture_declare.py. `body` is somebody
+        # else's note being classified, so the marker must come from here and
+        # never from the content.
+        input=declare_capture(body, "foundry", "audit-pass"),
         capture_output=True,
         text=True,
         encoding="utf-8",

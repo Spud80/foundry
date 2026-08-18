@@ -31,6 +31,8 @@ from pathlib import Path
 
 import yaml
 
+from _capture_declare import declare_capture
+
 # ---------- Constants ----------
 
 JOB_DIR = Path(__file__).resolve().parent
@@ -277,7 +279,10 @@ def call_claude(body: str, current_fm: dict, current_date: str) -> dict:
     for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
         proc = subprocess.run(
             cmd,
-            input=user_msg,
+            # Declared, not guessed: this job lets a model process content on
+            # the user's behalf, so it says what it is. The marker rides every
+            # retry attempt because it is part of the prompt, not the argv.
+            input=declare_capture(user_msg, "foundry", "fallback-classifier"),
             capture_output=True,
             text=True,
             encoding="utf-8",

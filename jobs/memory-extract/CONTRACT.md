@@ -51,6 +51,7 @@ Følgende filer importeres til `~/foundry/jobs/memory-extract/` på CT:
 | Fil | Type | Eier | Beskrivelse |
 |-----|------|------|-------------|
 | `extract.py` | Python 3.11+ | obsidian-memory | LLM-klassifisering av raw → typed extracted-entries; importerer `_aliases` + `_paths` + `_extracted_entries` (vendret ved siden av) |
+| `_capture_declare.py` | Python 3.11+ | obsidian-memory | `declare_capture(prompt, program, reason)` -> prompt med erklaerings-markoeren foerst; vendret dep for extract.py. Avhengighetsfri (kun `re`) med vilje, så den kan vendres uten `_jsonl_format.py`. Re-vendres ALLTID sammen med `extract.py` |
 | `_aliases.py` | Python 3.11+ | obsidian-memory | `load_aliases(aliases_path, *, strict)` -> `Aliases` + `AliasesError` (aliases.yaml-parsing for topic-normalisering); vendret dep for extract.py. Re-vendres ALLTID sammen med `extract.py` - de to henger på samme signatur |
 | `_paths.py` | Python 3.11+ | obsidian-memory | `resolve_vault_root` og `resolve_raw_dir`/`require_raw_dir` (CLI > env > platform-default); vendret dep for extract.py OG reconcile-manifest.py. Autoritativt hjem for raw-rot-navnet `CORTEX_RAW_ROOT` |
 | `reconcile-manifest.py` | Python 3.11+ | obsidian-memory | Manifest-reparasjon etter backup-restore; **importerer `_paths` fra 2026-08-09** (var stdlib-only før). Re-importeres alltid sammen med `_paths.py` |

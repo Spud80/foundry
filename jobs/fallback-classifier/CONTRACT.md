@@ -254,3 +254,15 @@ Aggregert exit-kode-logikk: exit 2 (fatal) > exit 1 (any transient) > exit 0 (cl
 - `cortex/docs/contracts/capture-vocabulary.md` - filformat-autoritet
   (frontmatter-skjema, `pre_classified`-enum, pipeline-state-machine)
 - `jobs/memory-extract/CONTRACT.md` - parallell mønster (Phase 600 leveranse-kontrakt)
+
+## Erklaerings-markoer (capture-self-declaration)
+
+`classify.py` kaller `claude -p` og erklaerer seg derfor selv: markoeren
+`<!-- claude-capture: exclude program=foundry reason=fallback-classifier -->` settes foerst i
+prompten via `declare_capture()` i den vendrede `_capture_declare.py`. Cortex' capture
+leser markoeren og holder sesjonen ute av minne-korpuset.
+
+Modulen er avhengighetsfri (kun `re`) og vendres fra
+`cortex/scripts/memory/_capture_declare.py`. Re-vendre den sammen med enhver endring i
+markoer-formatet - lesesiden feiler AAPENT, så en markoer som ikke matcher gir samme
+utfall som ingen markoer: sesjonen fanges, stille.
