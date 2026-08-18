@@ -55,13 +55,20 @@ DECLARATION_RE = re.compile(
 _FIELD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 
 
-def declare_capture(prompt: str, program: str, reason: str) -> str:
-    """``prompt`` with the declaration marker as its first line.
+def capture_marker(program: str, reason: str) -> str:
+    """The marker line alone, with no trailing newline.
+
+    For callers whose transport does not treat a newline as inert. The
+    control-plane's interactive REPL lane is the case that forced this out:
+    it TYPES the prompt into a live pane and then presses Enter, so an
+    embedded newline submits the turn halfway through. Prefixing the marker
+    plus a space still matches - the reader normalises whitespace before it
+    anchors at the start.
 
     Raises ``ValueError`` when ``program`` or ``reason`` falls outside the
     contract's charset, rather than emitting a marker the reader will not
-    recognise. The caller is a job naming itself, so the only way to get here is
-    a mistake worth stopping on.
+    recognise. The caller is a job naming itself, so the only way to get here
+    is a mistake worth stopping on.
     """
     for field, value in (("program", program), ("reason", reason)):
         if not _FIELD_RE.match(value or ""):
@@ -69,4 +76,9 @@ def declare_capture(prompt: str, program: str, reason: str) -> str:
                 f"{field}={value!r} is not a legal declaration field: expected "
                 r"[A-Za-z0-9][A-Za-z0-9_.-]*"
             )
-    return DECLARATION_MARKER.format(program=program, reason=reason) + "\n" + prompt
+    return DECLARATION_MARKER.format(program=program, reason=reason)
+
+
+def declare_capture(prompt: str, program: str, reason: str) -> str:
+    """``prompt`` with the declaration marker as its first line."""
+    return capture_marker(program, reason) + "\n" + prompt
