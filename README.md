@@ -18,6 +18,7 @@ bootstrap/             Idempotent CT-bringup (setup-linux.sh, watchdog, logrotat
 cron.d/                Crontab-fragmenter (én per jobb), regenereres av deploy.sh
 _shared/               Felles helpers (notify-core, notify, drain-queue, token-expiry-check)
 jobs/<jobname>/        Per-jobb subfolders med run.sh, requirements.txt, CONTRACT.md
+docs/                  Systemdesign (ARCHITECTURE.md) + repo-reference (layout, ADR-er, fil-roller)
 .github/workflows/     CI (shellcheck + cron-syntax + deploy-dry-run + notify-paritet)
 deploy.sh              Regenererer claude-bruker-crontab atomisk fra cron.d/
 auto-update.sh         Defensiv git-flow (fetch + reset --hard origin/$FOUNDRY_BRANCH + deploy.sh)
