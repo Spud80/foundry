@@ -14,4 +14,9 @@ SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 MAILTO=""
 
-0 * * * * claude /home/claude/.config/foundry/watchdog-notify.sh
+# Markør-halen registrerer kjøringen i fravær-registeret på foundry, som fleet-digest leser
+# 07:45. `&&` og ikke `;`: markøren betyr at jobben lyktes, så en feilet kjøring skal la
+# fraværet stå. mark-success.sh returnerer aldri annet enn 0 og kan ikke velte jobben.
+# NB: denne fila regenereres ikke av deploy.sh, så endringer her må installeres manuelt til
+# /etc/cron.d/foundry-watchdog (samme grunn som headeren over: watchdogen skal overleve deploy-feil).
+0 * * * * claude /home/claude/.config/foundry/watchdog-notify.sh && /opt/fleet/foundry/foundry-heartbeat/mark-success.sh foundry-watchdog

@@ -13,4 +13,7 @@
 #
 # Format: 5-felt user-crontab (deploy.sh konkatenerer til claude sin crontab).
 
-0 3 * * * cd /home/claude/foundry/jobs/fallback-classifier && ./run.sh
+# Markør-halen registrerer kjøringen i fravær-registeret på foundry, som fleet-digest leser
+# 07:45. `&&` og ikke `;`: markøren betyr at jobben lyktes, så en feilet kjøring skal la
+# fraværet stå. mark-success.sh returnerer aldri annet enn 0 og kan ikke velte jobben.
+0 3 * * * cd /home/claude/foundry/jobs/fallback-classifier && ./run.sh && /opt/fleet/foundry/foundry-heartbeat/mark-success.sh fallback-classifier

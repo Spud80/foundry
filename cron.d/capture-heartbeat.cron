@@ -7,4 +7,7 @@
 # after that; window is 25h per PLAN-memory-pipeline-hardening Phase 200).
 # capture-heartbeat.sh exit-er alltid 0; alarmer gar via Telegram-notify-stack.
 
-0 19 * * * /home/claude/foundry/_shared/capture-heartbeat.sh
+# Markør-halen registrerer kjøringen i fravær-registeret på foundry, som fleet-digest leser
+# 07:45. `&&` og ikke `;`: markøren betyr at jobben lyktes, så en feilet kjøring skal la
+# fraværet stå. mark-success.sh returnerer aldri annet enn 0 og kan ikke velte jobben.
+0 19 * * * /home/claude/foundry/_shared/capture-heartbeat.sh && /opt/fleet/foundry/foundry-heartbeat/mark-success.sh capture-heartbeat

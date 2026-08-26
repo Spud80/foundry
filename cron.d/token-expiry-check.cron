@@ -4,4 +4,7 @@
 # Tidspunkt: 09:00 norsk lokal-tid - tidlig nok til at bruker kan handle samme dag,
 # men ikke i nattlig peak-window for batch-jobber.
 
-0 9 * * * /home/claude/foundry/_shared/token-expiry-check.sh
+# Markør-halen registrerer kjøringen i fravær-registeret på foundry, som fleet-digest leser
+# 07:45. `&&` og ikke `;`: markøren betyr at jobben lyktes, så en feilet kjøring skal la
+# fraværet stå. mark-success.sh returnerer aldri annet enn 0 og kan ikke velte jobben.
+0 9 * * * /home/claude/foundry/_shared/token-expiry-check.sh && /opt/fleet/foundry/foundry-heartbeat/mark-success.sh token-expiry-check

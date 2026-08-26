@@ -4,4 +4,9 @@
 # eller manglende katalog er no-op.
 # Format: 5-felt user-crontab (deploy.sh konkatenerer til claude sin crontab).
 
-*/5 * * * * /home/claude/foundry/_shared/drain-queue.sh
+# Markør-halen registrerer kjøringen i fravær-registeret på foundry, som fleet-digest leser
+# 07:45. `&&` og ikke `;`: markøren betyr at jobben lyktes, så en feilet kjøring skal la
+# fraværet stå. mark-success.sh returnerer aldri annet enn 0 og kan ikke velte jobben.
+# Denne jobben er selve leveringsveien for køede Telegram-meldinger, så et stopp her gjør
+# hver kø-basert alarm taus - inkludert varsler om at noe annet er galt.
+*/5 * * * * /home/claude/foundry/_shared/drain-queue.sh && /opt/fleet/foundry/foundry-heartbeat/mark-success.sh drain-queue

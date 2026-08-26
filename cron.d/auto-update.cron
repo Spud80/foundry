@@ -8,4 +8,7 @@
 # time slik at andre jobber pa :00 eller :30 ikke kolliderer pa .deploy.lock.
 # Format: 5-felt user-crontab (deploy.sh konkatenerer til claude sin crontab).
 
-10,25,40,55 * * * * /home/claude/foundry/auto-update.sh
+# Markør-halen registrerer kjøringen i fravær-registeret på foundry, som fleet-digest leser
+# 07:45. `&&` og ikke `;`: markøren betyr at jobben lyktes, så en feilet kjøring skal la
+# fraværet stå. mark-success.sh returnerer aldri annet enn 0 og kan ikke velte jobben.
+10,25,40,55 * * * * /home/claude/foundry/auto-update.sh && /opt/fleet/foundry/foundry-heartbeat/mark-success.sh auto-update
