@@ -46,6 +46,11 @@ EXTRACT_PY="${JOB_DIR}/extract.py"
 VENV_PYTHON="${JOB_DIR}/.venv/bin/python"
 EXTRACT_TIMEOUT="${EXTRACT_TIMEOUT:-60m}"
 
+# Pre-flight result classification. Sourced rather than inlined so the message
+# the operator receives can be tested without running the job.
+# shellcheck source=jobs/memory-extract/_preflight.sh
+. "${JOB_DIR}/_preflight.sh"
+
 # CP-dispatch-kontrakt (delegated-headless-lanen). Uten --cp-correlation kjorer vi i
 # cron-modus og minter egen correlation, slik at ogsa fallback-dager metres via spoolen.
 CP_CORRELATION=""
@@ -140,8 +145,12 @@ cleanup_status=$?
 log "filehub-cleanup output: ${cleanup_out}"
 log "filehub-cleanup exit: ${cleanup_status}"
 
-if [ "$cleanup_status" -ne 0 ]; then
-  notify "pre-flight blocked: filehub-cleanup returned exit ${cleanup_status} (Syncthing conflicts unresolved). See logs."
+# Three outcomes, not two: the check ran and found nothing, the check ran and
+# found conflicts, or the check never ran. See _preflight.sh for why the last
+# one used to be reported as the middle one, and what that cost.
+if ! preflight_msg="$(classify_cleanup_result "$cleanup_status" "$cleanup_out")"; then
+  log "pre-flight: ${preflight_msg}"
+  notify "$preflight_msg"
   exit 1
 fi
 
